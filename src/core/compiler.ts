@@ -986,23 +986,25 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
           this.mergeExprAtoms(localAtoms, spotsExpr);
           body = `return ${spotsExpr.code};`;
         } else {
-          const scaleF = `clamp(floor(${scale} + 0.5), 1.0, 32.0)`;
+          const scaleScalar = `float(${scale})`;
+          const seedScalar = `float(${seedF})`;
+          const scaleF = `clamp(floor(${scaleScalar} + 0.5), 1.0, 32.0)`;
           const aspect = `(${res}.x / max(${res}.y, 1.0))`;
           const uvSq = this.sel(`${nonSquare} > 0.5`, `vec2(uv.x * (${aspect}), uv.y)`, 'uv');
           const p0 = `(${uvSq} * ${scaleF} + ${tileOffset})`;
           const q0 = p0;
           const per0 = scaleF;
           const baseRaw = `(
-            0.5   * perlin2i_tiled(${q0} * 1.0, ${per0} * 1.0, ${seedF} + 17.0) +
-            0.25  * perlin2i_tiled(${q0} * 2.0, ${per0} * 2.0, ${seedF} + 31.0) +
-            0.125 * perlin2i_tiled(${q0} * 4.0, ${per0} * 4.0, ${seedF} + 53.0) +
-            0.0625* perlin2i_tiled(${q0} * 8.0, ${per0} * 8.0, ${seedF} + 79.0)
+            0.5   * perlin2i_tiled(${q0} * 1.0, ${per0} * 1.0, ${seedScalar} + 17.0) +
+            0.25  * perlin2i_tiled(${q0} * 2.0, ${per0} * 2.0, ${seedScalar} + 31.0) +
+            0.125 * perlin2i_tiled(${q0} * 4.0, ${per0} * 4.0, ${seedScalar} + 53.0) +
+            0.0625* perlin2i_tiled(${q0} * 8.0, ${per0} * 8.0, ${seedScalar} + 79.0)
           ) / 0.9375`;
           const base = `smoothstep(0.35, 0.75, ${baseRaw})`;
           const baseCtr = `clamp((${base} - 0.5) * max(${contrast}, 0.001) + 0.5, 0.0, 1.0)`;
-          const cluster = `perlin2i_tiled(${p0} * 2.0 + vec2(13.2, -9.7), ${per0} * 2.0, ${seedF} + 137.0)`;
+          const cluster = `perlin2i_tiled(${p0} * 2.0 + vec2(13.2, -9.7), ${per0} * 2.0, ${seedScalar} + 137.0)`;
           const th = `clamp(${grainThreshold} + (${cluster} - 0.5) * 0.12, 0.0, 1.0)`;
-          const grain = `hash2(floor(uv * ${res}) + vec2(${seedF} * 0.013, ${seedF} * 0.071))`;
+          const grain = `hash2(floor(uv * ${res}) + vec2(${seedScalar} * 0.013, ${seedScalar} * 0.071))`;
           const pepper = `step(${th}, ${grain})`;
           body = `return clamp(${baseCtr} - clamp(${grainAmount}, 0.0, 1.0) * ${pepper}, 0.0, 1.0);`;
         }
