@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --nt-bg-0: #17181b;
-  --nt-bg-1: #1d1f24;
-  --nt-bg-2: #24272d;
-  --nt-bg-3: #2d3139;
-  --nt-bg-4: #383e48;
-  --nt-border-1: #353b46;
-  --nt-border-2: #4a5262;
-  --nt-accent: #4d78bc;
-  --nt-accent-weak: #4d78bc30;
+  --nt-bg-0: #0f1622;
+  --nt-bg-1: #162133;
+  --nt-bg-2: #1b2a40;
+  --nt-bg-3: #223451;
+  --nt-bg-4: #2a3f62;
+  --nt-border-1: #2d4367;
+  --nt-border-2: #3f5f91;
+  --nt-accent: #26c6a4;
+  --nt-accent-weak: #26c6a433;
   --nt-text-0: #f1f3f8;
   --nt-text-1: #d8dce7;
   --nt-text-2: #bcc3d4;
@@ -19,7 +19,7 @@
 }
 
 html, body, #root {
-  background: var(--nt-bg-0);
+  background: radial-gradient(1200px 700px at 10% -15%, #173454 0%, transparent 42%), var(--nt-bg-0);
   color: var(--nt-text-1);
 }
 
@@ -123,15 +123,15 @@ html, body, #root {
   background: #2f3543;
 }
 .nt-btn-icon {
-  width: 30px;
-  height: 24px;
+  width: 28px;
+  height: 22px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 .nt-btn-icon svg {
-  stroke-width: 2.2;
+  stroke-width: 2.1;
 }
 
 /* Select dropdown */

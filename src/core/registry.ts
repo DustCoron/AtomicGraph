@@ -11,6 +11,9 @@ import {
 
 const floatIn = (label: string): PortDefinition => ({ id: label, type: 'float', label });
 const floatOut = (): PortDefinition => ({ id: 'out', type: 'float', label: 'Out' });
+const vec2In = (label: string): PortDefinition => ({ id: label, type: 'vec2', label });
+const vec3In = (label: string): PortDefinition => ({ id: label, type: 'vec3', label });
+const vec3Out = (label: string = 'Out'): PortDefinition => ({ id: 'out', type: 'vec3', label });
 
 const param = (type: ParamDefinition['type'], def: any, min?: number, max?: number, step?: number, options?: string[]): ParamDefinition => ({
   type, default: def, min, max, step, options
@@ -386,6 +389,16 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
       contrast: param('float', 1.0, 0.1, 8, 0.1),
     }
   },
+  histogram_range: {
+    type: 'histogram_range', label: 'Histogram Range', category: 'filter',
+    inputs: [floatIn('In')], outputs: [floatOut()],
+    params: {
+      inMin: param('float', 0.15, 0, 1, 0.005),
+      inMax: param('float', 0.85, 0, 1, 0.005),
+      outMin: param('float', 0.0, 0, 1, 0.005),
+      outMax: param('float', 1.0, 0, 1, 0.005),
+    }
+  },
   curve: {
     type: 'curve', label: 'Curve', category: 'filter',
     inputs: [floatIn('In')], outputs: [floatOut()],
@@ -397,8 +410,17 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
   },
   warp: {
     type: 'warp', label: 'Domain Warp', category: 'filter',
-    inputs: [floatIn('In'), { id: 'Warp', type: 'vec2', label: 'Warp' }], outputs: [floatOut()],
+    inputs: [floatIn('In'), vec2In('Warp')], outputs: [floatOut()],
     params: { strength: param('float', 0.15, 0, 0.5, 0.005) }
+  },
+  vector_warp: {
+    type: 'vector_warp', label: 'Vector Warp Grayscale', category: 'filter',
+    inputs: [floatIn('In'), vec2In('Vector')], outputs: [floatOut()],
+    params: {
+      intensity: param('float', 0.15, 0, 1, 0.005),
+      centered: param('bool', true),
+      tile: param('bool', true),
+    }
   },
   directional_warp: {
     type: 'directional_warp', label: 'Directional Warp', category: 'filter',
@@ -426,6 +448,36 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
     params: {
       intensity: param('float', 2.0, 0, 16, 0.1),
       samples: param('float', 4.0, 1, 8, 1),
+    }
+  },
+  non_uniform_blur: {
+    type: 'non_uniform_blur', label: 'Non-Uniform Blur Grayscale', category: 'filter',
+    inputs: [floatIn('In'), floatIn('BlurMap')],
+    outputs: [floatOut()],
+    params: {
+      radius: param('float', 2.0, 0.0, 12.0, 0.1),
+      samples: param('float', 4.0, 1, 4, 1),
+    }
+  },
+  transform_2d: {
+    type: 'transform_2d', label: 'Transformation 2D', category: 'filter',
+    inputs: [floatIn('In')], outputs: [floatOut()],
+    params: {
+      offsetX: param('float', 0.0, -2, 2, 0.005),
+      offsetY: param('float', 0.0, -2, 2, 0.005),
+      rotation: param('float', 0.0, -180, 180, 0.5),
+      scale: param('float', 1.0, 0.05, 8, 0.01),
+      tile: param('bool', true),
+    }
+  },
+  safe_transform: {
+    type: 'safe_transform', label: 'Safe Transform Grayscale', category: 'filter',
+    inputs: [floatIn('In')], outputs: [floatOut()],
+    params: {
+      offsetX: param('float', 0.0, -2, 2, 0.005),
+      offsetY: param('float', 0.0, -2, 2, 0.005),
+      scale: param('float', 1.0, 0.05, 8, 0.01),
+      tile: param('bool', false),
     }
   },
   flood_fill: {
@@ -458,14 +510,38 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
       center: param('float', 0, -1, 1, 0.01)
     }
   },
+  highpass_grayscale: {
+    type: 'highpass_grayscale', label: 'Highpass Grayscale', category: 'filter',
+    inputs: [floatIn('In')], outputs: [floatOut()],
+    params: {
+      radius: param('float', 1.0, 0.5, 8.0, 0.1),
+      intensity: param('float', 1.0, 0.1, 4.0, 0.05),
+    }
+  },
   height_to_normal: {
     type: 'height_to_normal', label: 'Height to Normal', category: 'filter',
     inputs: [floatIn('Height')],
-    outputs: [{ id: 'out', type: 'vec3', label: 'Normal' }],
+    outputs: [vec3Out('Normal')],
     params: {
-      strength: param('float', 1.0, 0.01, 4.0, 0.02),
+      strength: param('float', 2.0, 0.01, 4.0, 0.02),
       radius: param('float', 1.0, 0.5, 4.0, 0.1),
       flipY: param('bool', false)
+    }
+  },
+  normal_combine: {
+    type: 'normal_combine', label: 'Normal Combine', category: 'filter',
+    inputs: [vec3In('Base'), vec3In('Detail')],
+    outputs: [vec3Out('Normal')],
+    params: {
+      strength: param('float', 1.0, 0.0, 2.0, 0.01),
+    }
+  },
+  normal_normalize: {
+    type: 'normal_normalize', label: 'Normal Normalize', category: 'filter',
+    inputs: [vec3In('Normal')],
+    outputs: [vec3Out('Normal')],
+    params: {
+      flipY: param('bool', false),
     }
   },
 
@@ -536,7 +612,8 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
       { id: 'baseColor', type: 'vec3', label: 'BaseColor' },
       { id: 'roughness', type: 'float', label: 'Roughness' },
       { id: 'normal', type: 'vec3', label: 'Normal' },
-      { id: 'height', type: 'float', label: 'Height' }
+      { id: 'height', type: 'float', label: 'Height' },
+      { id: 'metallic', type: 'float', label: 'Metallic' }
     ],
     outputs: [],
     params: {}
@@ -562,6 +639,12 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
   output_height: {
     type: 'output_height', label: 'Output Height', category: 'output',
     inputs: [{ id: 'height', type: 'float', label: 'Height' }],
+    outputs: [],
+    params: {}
+  },
+  output_metallic: {
+    type: 'output_metallic', label: 'Output Metallic', category: 'output',
+    inputs: [{ id: 'metallic', type: 'float', label: 'Metallic' }],
     outputs: [],
     params: {}
   }
@@ -617,6 +700,7 @@ if (NODE_REGISTRY_V2.output) {
   NODE_REGISTRY_V2.output.inputs[1].constraints = { maxConnections: 1, allowedTypes: ['float'] };
   NODE_REGISTRY_V2.output.inputs[2].constraints = { maxConnections: 1, allowedTypes: ['float', 'vec3', 'vec4'] };
   NODE_REGISTRY_V2.output.inputs[3].constraints = { maxConnections: 1, allowedTypes: ['float'] };
+  NODE_REGISTRY_V2.output.inputs[4].constraints = { maxConnections: 1, allowedTypes: ['float'] };
 }
 if (NODE_REGISTRY_V2.output_baseColor) {
   NODE_REGISTRY_V2.output_baseColor.inputs[0].constraints = { maxConnections: 1, allowedTypes: ['float', 'vec3', 'vec4'] };
@@ -629,6 +713,9 @@ if (NODE_REGISTRY_V2.output_normal) {
 }
 if (NODE_REGISTRY_V2.output_height) {
   NODE_REGISTRY_V2.output_height.inputs[0].constraints = { maxConnections: 1, allowedTypes: ['float'] };
+}
+if (NODE_REGISTRY_V2.output_metallic) {
+  NODE_REGISTRY_V2.output_metallic.inputs[0].constraints = { maxConnections: 1, allowedTypes: ['float'] };
 }
 
 export const getNodeDefinitionV2 = (type: string): NodeDefinitionV2 | undefined => NODE_REGISTRY_V2[type];

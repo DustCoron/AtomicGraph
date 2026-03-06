@@ -93,6 +93,7 @@ interface NodeCardProps {
   onOpen?: (id: string) => void;
   previewUrl?: string;
   compileMs?: number;
+  lodMode?: 'full' | 'compact';
 }
 
 const COMPAT_COLORS = { exact: '#22c55e', cast: '#eab308', invalid: '#ef4444' } as const;
@@ -126,12 +127,13 @@ function buildNodeTooltip(def: (typeof NODE_REGISTRY)[string], node: NodeData): 
   ].join('\n');
 }
 
-function RemoteCard({ node, allNodes, isSel, onDrag, onUpdate, onDelete, onSelect }: {
+function RemoteCard({ node, allNodes, isSel, onDrag, onUpdate, onDelete, onSelect, compact }: {
   node: NodeData; allNodes: NodeData[]; isSel: boolean;
   onDrag: (e: React.MouseEvent, id: string) => void;
   onUpdate: (id: string, k: string, v: any) => void;
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
+  compact: boolean;
 }) {
   const ac = '#0e4d6b';
   const targetId = node.params.target || '';
@@ -153,13 +155,13 @@ function RemoteCard({ node, allNodes, isSel, onDrag, onUpdate, onDelete, onSelec
   const rh = HDR + 28 * 3 + 48 + 10;
 
   return (
-    <div title="Remote node: bind and drive another node parameter from one control." onMouseDown={e => { e.stopPropagation(); onSelect(node.id); }} style={{
+    <div draggable={false} title="Remote node: bind and drive another node parameter from one control." onMouseDown={e => { e.stopPropagation(); onSelect(node.id); }} style={{
       position: 'absolute', left: node.x, top: node.y, width: NW_REMOTE, height: rh,
       background: '#0c0c17', border: `1px solid ${isSel ? ac : ac + '22'}`, borderRadius: 7,
       boxShadow: isSel ? `0 0 0 2.5px ${ac}50,0 8px 36px #000000cc` : `0 4px 24px #000000aa`,
       pointerEvents: 'all', overflow: 'visible',
     }}>
-      <div onMouseDown={e => onDrag(e, node.id)} style={{
+      <div onMouseDown={e => { e.preventDefault(); onDrag(e, node.id); }} style={{
         height: HDR, display: 'flex', alignItems: 'center', padding: '0 10px', gap: 8, cursor: 'grab',
         background: ac, borderBottom: `1px solid ${ac}99`, borderRadius: '6px 6px 0 0', userSelect: 'none',
       }}>
@@ -168,63 +170,72 @@ function RemoteCard({ node, allNodes, isSel, onDrag, onUpdate, onDelete, onSelec
           style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 1px', transition: 'color .12s' }}
           onMouseEnter={e => e.currentTarget.style.color = '#f87171'} onMouseLeave={e => e.currentTarget.style.color = '#94a3b8'}>x</button>
       </div>
-      <div style={{ padding: '4px 10px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
-          <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Target</span>
-          <select value={targetId} onMouseDown={e => e.stopPropagation()}
-            onChange={e => onUpdate(node.id, 'target', e.target.value)}
-            style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', flex: 1 }}>
-            <option value="">-- select --</option>
-            {candidates.map(n => {
-              const d = NODE_REGISTRY[n.type];
-              return <option key={n.id} value={n.id}>{d?.label || n.type} ({n.id})</option>;
-            })}
-          </select>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
-          <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Param</span>
-          <select value={paramKey} onMouseDown={e => e.stopPropagation()}
-            onChange={e => {
-              onUpdate(node.id, 'key', e.target.value);
-              if (targetNode && e.target.value in targetNode.params) {
-                onUpdate(node.id, 'value', targetNode.params[e.target.value]);
-              }
-            }}
-            style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', flex: 1 }}>
-            <option value="">-- select --</option>
-            {paramKeys.map(k => <option key={k} value={k}>{k}</option>)}
-          </select>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
-          <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Label</span>
-          <input type="text" value={node.params.label || ''} placeholder={paramKey || 'Label'}
-            onMouseDown={e => e.stopPropagation()}
-            onChange={e => onUpdate(node.id, 'label', e.target.value)}
-            style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', outline: 'none', flex: 1 }} />
-        </div>
-      </div>
-      {paramDef && (
-        <div style={{ padding: '4px 10px 8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-            <span style={{ fontSize: 10, fontWeight: 600, color: '#e2e8f0', letterSpacing: 0.3 }}>{label}</span>
-            <span style={{ fontSize: 11, color: '#f8fafc', fontFamily: 'monospace' }}>{Number(val).toFixed(dec)}</span>
+      {!compact ? (
+        <>
+          <div style={{ padding: '4px 10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
+              <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Target</span>
+              <select value={targetId} onMouseDown={e => e.stopPropagation()}
+                onChange={e => onUpdate(node.id, 'target', e.target.value)}
+                style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', flex: 1 }}>
+                <option value="">-- select --</option>
+                {candidates.map(n => {
+                  const d = NODE_REGISTRY[n.type];
+                  return <option key={n.id} value={n.id}>{d?.label || n.type} ({n.id})</option>;
+                })}
+              </select>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
+              <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Param</span>
+              <select value={paramKey} onMouseDown={e => e.stopPropagation()}
+                onChange={e => {
+                  onUpdate(node.id, 'key', e.target.value);
+                  if (targetNode && e.target.value in targetNode.params) {
+                    onUpdate(node.id, 'value', targetNode.params[e.target.value]);
+                  }
+                }}
+                style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', flex: 1 }}>
+                <option value="">-- select --</option>
+                {paramKeys.map(k => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
+              <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Label</span>
+              <input type="text" value={node.params.label || ''} placeholder={paramKey || 'Label'}
+                onMouseDown={e => e.stopPropagation()}
+                onChange={e => onUpdate(node.id, 'label', e.target.value)}
+                style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', outline: 'none', flex: 1 }} />
+            </div>
           </div>
-          <input type="range" min={pMin} max={pMax} step={pStep} value={val}
-            onMouseDown={e => e.stopPropagation()}
-            onChange={e => onUpdate(node.id, 'value', parseFloat(e.target.value))}
-            style={{ width: '100%', accentColor: '#64748b', cursor: 'pointer', height: 6 }} />
+          {paramDef && (
+            <div style={{ padding: '4px 10px 8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#e2e8f0', letterSpacing: 0.3 }}>{label}</span>
+                <span style={{ fontSize: 11, color: '#f8fafc', fontFamily: 'monospace' }}>{Number(val).toFixed(dec)}</span>
+              </div>
+              <input type="range" min={pMin} max={pMax} step={pStep} value={val}
+                onMouseDown={e => e.stopPropagation()}
+                onChange={e => onUpdate(node.id, 'value', parseFloat(e.target.value))}
+                style={{ width: '100%', accentColor: '#64748b', cursor: 'pointer', height: 6 }} />
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ height: rh - HDR, display: 'grid', placeItems: 'center', color: '#8ea3c8', fontSize: 10, letterSpacing: 0.4 }}>
+          REMOTE LINK
         </div>
       )}
     </div>
   );
 }
 
-export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connFromPort, connFromType, snapTarget, onDrag, onOut, onIn, onUpdate, onDelete, onSelect, onOpen, previewUrl, compileMs }: NodeCardProps) {
+export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connFromPort, connFromType, snapTarget, onDrag, onOut, onIn, onUpdate, onDelete, onSelect, onOpen, previewUrl, compileMs, lodMode = 'full' }: NodeCardProps) {
   const def = NODE_REGISTRY[node.type];
   if (!def) return null;
+  const compact = lodMode === 'compact' && !isSel && !isConn;
 
   if (node.type === 'remote' && allNodes) {
-    return <RemoteCard node={node} allNodes={allNodes} isSel={isSel} onDrag={onDrag} onUpdate={onUpdate} onDelete={onDelete} onSelect={onSelect} />;
+    return <RemoteCard node={node} allNodes={allNodes} isSel={isSel} onDrag={onDrag} onUpdate={onUpdate} onDelete={onDelete} onSelect={onSelect} compact={compact} />;
   }
 
   const ac = catColor(node.type);
@@ -234,6 +245,7 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
 
   return (
     <div
+      draggable={false}
       title={nodeTooltip}
       onMouseDown={e => { e.stopPropagation(); onSelect(node.id); }}
       onDoubleClick={e => { e.stopPropagation(); onSelect(node.id); onOpen?.(node.id); }}
@@ -245,7 +257,7 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
       boxShadow: isSel ? `0 0 0 2.5px ${ac}50,0 8px 36px #000000cc,inset 0 1px 0 #ffffff08` : `0 4px 24px #000000aa,inset 0 1px 0 #ffffff05`,
       pointerEvents: "all", overflow: "visible", transition: "border-color .1s,box-shadow .1s",
     }}>
-      <div onMouseDown={e => onDrag(e, node.id)} style={{
+      <div onMouseDown={e => { e.preventDefault(); onDrag(e, node.id); }} style={{
         height: HDR, display: "flex", alignItems: "center", padding: "0 10px", gap: 8, cursor: "grab",
         background: ac, borderBottom: `1px solid ${ac}99`, borderRadius: "6px 6px 0 0", userSelect: "none",
       }}>
@@ -264,6 +276,7 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
           }} />
         )}
       </div>
+      {!compact && (
       <div style={{ height: PREVIEW_H, padding: '6px 10px 4px 10px', boxSizing: 'border-box' }}>
         <div
           style={{
@@ -290,7 +303,8 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
           )}
         </div>
       </div>
-      {def.inputs.map((port, i) => {
+      )}
+      {!compact && def.inputs.map((port, i) => {
         const connected = edges.some(e => e.toId === node.id && e.toPort === i);
         const isSelf = connFrom === node.id;
         const isSnapped = snapTarget?.portIndex === i;
@@ -342,10 +356,10 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
           </div>
         );
       })}
-      {Object.entries(node.params).map(([k, v]) => (
+      {!compact && Object.entries(node.params).map(([k, v]) => (
         <Param key={k} pk={k} val={v} meta={def.params[k]} nodeId={node.id} onUpdate={onUpdate} />
       ))}
-      {!isOutputNodeType(node.type) && def.outputs && def.outputs.length > 1 && def.outputs.map((port, i) => {
+      {!compact && !isOutputNodeType(node.type) && def.outputs && def.outputs.length > 1 && def.outputs.map((port, i) => {
         const portTypeColor = dataTypeColor(port.type as DataType);
         const connected = edges.some(e => e.fromId === node.id && e.fromPort === i);
         return (
@@ -360,6 +374,11 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
           </div>
         );
       })}
+      {compact && (
+        <div style={{ height: nh - HDR, display: 'grid', placeItems: 'center', color: '#7f90b3', fontSize: 9, letterSpacing: 0.4 }}>
+          {def.inputs.length} IN / {def.outputs.length} OUT
+        </div>
+      )}
       {compileMs != null && (
         <div style={{
           position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 4,

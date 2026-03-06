@@ -1,12 +1,13 @@
 import { EdgeData, GraphData, NodeData } from './types';
 
-export type OutputChannel = 'baseColor' | 'roughness' | 'normal' | 'height';
+export type OutputChannel = 'baseColor' | 'roughness' | 'normal' | 'height' | 'metallic';
 
 export interface OutputChannelMapping {
   baseColor?: EdgeData;
   roughness?: EdgeData;
   normal?: EdgeData;
   height?: EdgeData;
+  metallic?: EdgeData;
 }
 
 export interface ExportPresetTarget {
@@ -25,28 +26,32 @@ export const OUTPUT_CHANNEL_PORTS: Record<OutputChannel, number> = {
   baseColor: 0,
   roughness: 1,
   normal: 2,
-  height: 3
+  height: 3,
+  metallic: 4
 };
 
 export const OUTPUT_CHANNEL_NODE_TYPES: Record<OutputChannel, string> = {
   baseColor: 'output_baseColor',
   roughness: 'output_roughness',
   normal: 'output_normal',
-  height: 'output_height'
+  height: 'output_height',
+  metallic: 'output_metallic'
 };
 
 export const OUTPUT_NODE_TYPE_TO_CHANNEL: Record<string, OutputChannel> = {
   output_baseColor: 'baseColor',
   output_roughness: 'roughness',
   output_normal: 'normal',
-  output_height: 'height'
+  output_height: 'height',
+  output_metallic: 'metallic'
 };
 
 const PORT_TO_CHANNEL: Record<number, OutputChannel> = {
   0: 'baseColor',
   1: 'roughness',
   2: 'normal',
-  3: 'height'
+  3: 'height',
+  4: 'metallic'
 };
 
 export const EXPORT_PRESETS: ExportPreset[] = [
@@ -57,7 +62,8 @@ export const EXPORT_PRESETS: ExportPreset[] = [
       { channel: 'baseColor', fileSuffix: 'basecolor', format: 'png' },
       { channel: 'roughness', fileSuffix: 'roughness', format: 'png' },
       { channel: 'normal', fileSuffix: 'normal', format: 'png' },
-      { channel: 'height', fileSuffix: 'height', format: 'png' }
+      { channel: 'height', fileSuffix: 'height', format: 'png' },
+      { channel: 'metallic', fileSuffix: 'metallic', format: 'png' }
     ]
   }
 ];

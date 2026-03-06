@@ -9,48 +9,38 @@ const DEFAULT_LAYOUT: LayoutNode = {
   kind: 'split',
   id: 'root',
   direction: 'horizontal',
-  ratio: 0.14,
+  ratio: 0.62,
   children: [
     {
-      kind: 'panel', id: 'p-library',
-      tabs: [{ id: 'v-library', type: 'library', title: 'Library' }],
-      activeTabId: 'v-library', pinned: false,
-    },
-    {
-      kind: 'split', id: 's-center-right', direction: 'horizontal', ratio: 0.62,
+      kind: 'split', id: 's-graph-explorer', direction: 'vertical', ratio: 0.78,
       children: [
         {
-          kind: 'split', id: 's-graph-explorer', direction: 'vertical', ratio: 0.78,
-          children: [
-            {
-              kind: 'panel', id: 'p-graph',
-              tabs: [{ id: 'v-graph', type: 'graph', title: 'Graph' }],
-              activeTabId: 'v-graph', pinned: false,
-            },
-            {
-              kind: 'panel', id: 'p-explorer',
-              tabs: [{ id: 'v-explorer', type: 'explorer', title: 'Explorer' }],
-              activeTabId: 'v-explorer', pinned: false,
-            },
-          ],
+          kind: 'panel', id: 'p-graph',
+          tabs: [{ id: 'v-graph', type: 'graph', title: 'Graph' }],
+          activeTabId: 'v-graph', pinned: false,
         },
         {
-          kind: 'split', id: 's-preview-code', direction: 'vertical', ratio: 0.50,
-          children: [
-            {
-              kind: 'panel', id: 'p-preview',
-              tabs: [
-                { id: 'v-preview', type: 'preview', title: '2D Preview' },
-                { id: 'v-preview3d', type: 'preview3d', title: '3D Preview' },
-              ],
-              activeTabId: 'v-preview', pinned: false,
-            },
-            {
-              kind: 'panel', id: 'p-code',
-              tabs: [{ id: 'v-code', type: 'code', title: 'Code' }],
-              activeTabId: 'v-code', pinned: false,
-            },
+          kind: 'panel', id: 'p-explorer',
+          tabs: [{ id: 'v-explorer', type: 'explorer', title: 'Explorer' }],
+          activeTabId: 'v-explorer', pinned: false,
+        },
+      ],
+    },
+    {
+      kind: 'split', id: 's-preview-code', direction: 'vertical', ratio: 0.50,
+      children: [
+        {
+          kind: 'panel', id: 'p-preview',
+          tabs: [
+            { id: 'v-preview', type: 'preview', title: '2D Preview' },
+            { id: 'v-preview3d', type: 'preview3d', title: '3D Preview' },
           ],
+          activeTabId: 'v-preview', pinned: false,
+        },
+        {
+          kind: 'panel', id: 'p-code',
+          tabs: [{ id: 'v-code', type: 'code', title: 'Code' }],
+          activeTabId: 'v-code', pinned: false,
         },
       ],
     },
@@ -100,6 +90,21 @@ function ensurePreviewTabsInFloating(floating: FloatingPanel[]): FloatingPanel[]
     ...f,
     panel: ensurePreviewTabAdjacencyInPanel(f.panel),
   }));
+}
+
+function removeLegacyLibraryColumn(root: LayoutNode): LayoutNode {
+  if (root.kind !== 'split' || root.id !== 'root' || root.direction !== 'horizontal') return root;
+  const [left, right] = root.children;
+  if (
+    left.kind === 'panel'
+    && left.id === 'p-library'
+    && left.tabs.length === 1
+    && left.tabs[0].type === 'library'
+  ) {
+    if (right.kind === 'split') return { ...right, id: 'root' };
+    return right;
+  }
+  return root;
 }
 
 interface WorkspacePreset {
@@ -207,7 +212,7 @@ export interface WorkspaceStore {
 export const useWorkspace = create<WorkspaceStore>()(
   persist(
     (set, get) => ({
-      root: ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT)),
+      root: removeLegacyLibraryColumn(ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT))),
       floating: [],
       maximizedPanelId: null,
 
@@ -377,7 +382,7 @@ export const useWorkspace = create<WorkspaceStore>()(
         return tabId;
       },
 
-      resetLayout: () => set({ root: ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT)), floating: [], maximizedPanelId: null }),
+      resetLayout: () => set({ root: removeLegacyLibraryColumn(ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT))), floating: [], maximizedPanelId: null }),
 
       savePreset: (name) => {
         const s = get();
@@ -391,7 +396,7 @@ export const useWorkspace = create<WorkspaceStore>()(
         const preset = presets[name];
         if (!preset?.root) return false;
         set({
-          root: ensurePreviewTabsInLayout(preset.root),
+          root: removeLegacyLibraryColumn(ensurePreviewTabsInLayout(preset.root)),
           floating: ensurePreviewTabsInFloating(preset.floating || []),
           maximizedPanelId: preset.maximizedPanelId || null
         });
@@ -413,7 +418,7 @@ export const useWorkspace = create<WorkspaceStore>()(
       merge: (persistedState, currentState) => {
         const persisted = (persistedState || {}) as Partial<WorkspaceStore>;
         const next = { ...currentState };
-        if (isLayoutNode((persisted as any).root)) next.root = ensurePreviewTabsInLayout((persisted as any).root);
+        if (isLayoutNode((persisted as any).root)) next.root = removeLegacyLibraryColumn(ensurePreviewTabsInLayout((persisted as any).root));
         if (Array.isArray((persisted as any).floating)) {
           next.floating = ensurePreviewTabsInFloating((persisted as any).floating.filter(isFloatingPanel));
         }

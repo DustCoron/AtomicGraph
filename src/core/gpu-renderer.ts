@@ -43,7 +43,10 @@ export class GPUQuadRenderer {
   }
 
   private async init(canvas: HTMLCanvasElement): Promise<boolean> {
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    const isWindows = /Windows/i.test(navigator.userAgent || '');
+    const adapter = await navigator.gpu.requestAdapter(
+      isWindows ? undefined : { powerPreference: 'high-performance' }
+    );
     if (!adapter) return false;
     this.device = await adapter.requestDevice();
     this.context = canvas.getContext('webgpu') as GPUCanvasContext;

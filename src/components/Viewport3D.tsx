@@ -10,19 +10,23 @@ interface Viewport3DProps {
   heightCanvas?: HTMLCanvasElement | null;
   normalCanvas?: HTMLCanvasElement | null;
   roughnessCanvas?: HTMLCanvasElement | null;
+  metallicCanvas?: HTMLCanvasElement | null;
   baseColorVersion?: number;
   heightVersion?: number;
   normalVersion?: number;
   roughnessVersion?: number;
+  metallicVersion?: number;
   frameBudgetMs?: number;
   performanceMode?: PerformanceMode;
 }
 
 type MeshPreset = 'plane' | 'sphere' | 'cube' | 'cylinder';
-type ViewMode = 'lit' | 'baseColor' | 'normal' | 'roughness' | 'height';
-type EnvPreset = 'studio' | 'overcast' | 'sunset' | 'neutral' | 'custom';
+type ViewMode = 'lit' | 'baseColor' | 'normal' | 'roughness' | 'metallic' | 'height';
+type EnvPreset = 'studio' | 'overcast' | 'sunset' | 'neutral' | 'hdr_studio' | 'hdr_city' | 'custom';
+type ProceduralEnvPreset = 'studio' | 'overcast' | 'sunset' | 'neutral';
 type ToneMappingMode = 'aces' | 'linear' | 'reinhard' | 'cineon';
-type Channel = 'baseColor' | 'height' | 'normal' | 'roughness';
+type Channel = 'baseColor' | 'height' | 'normal' | 'roughness' | 'metallic';
+type TessellationQuality = 'low' | 'med' | 'high';
 
 interface SceneState {
   renderer: THREE.WebGLRenderer;
@@ -38,6 +42,10 @@ interface SceneState {
   pmrem: THREE.PMREMGenerator;
   envSource: THREE.Texture | null;
   envMap: THREE.Texture | null;
+  activeEnvKey: string | null;
+  envCache: Map<string, CachedEnvironment>;
+  envRequestSeq: number;
+  geometryCache: Map<string, THREE.BufferGeometry>;
   textures: Record<Channel, THREE.Texture>;
   fallbacks: Record<Channel, THREE.Texture>;
   wireframeMesh: THREE.LineSegments | null;
@@ -50,14 +58,32 @@ interface CachedCanvasTexture {
   refs: number;
 }
 
+interface CachedEnvironment {
+  source: THREE.Texture;
+  envMap: THREE.Texture;
+}
+
 const QUALITY_LEVELS: ReadonlyArray<ViewportQualityState['scale']> = [1, 0.75, 0.5];
 const PERF_RING_SIZE = 300;
+const IDLE_RENDER_INTERVAL_MS = 220;
+const FORCE_RENDER_INTERVAL_MS = 1200;
+const COMPASS_SIZE = 92;
+const COMPASS_MARGIN = 10;
+const BLENDER_AXIS = {
+  x: 0xff5555,
+  y: 0x55ff55,
+  z: 0x4a8dff,
+};
 const CANVAS_TEXTURE_CACHE = new WeakMap<HTMLCanvasElement, CachedCanvasTexture>();
 const TONE_MAPPING_VALUES: Record<ToneMappingMode, THREE.ToneMapping> = {
   aces: THREE.ACESFilmicToneMapping,
   linear: THREE.LinearToneMapping,
   reinhard: THREE.ReinhardToneMapping,
   cineon: THREE.CineonToneMapping,
+};
+const BUILTIN_HDR_PRESETS: Record<'hdr_studio' | 'hdr_city', { label: string; url: string }> = {
+  hdr_studio: { label: 'HDR Studio', url: '/hdr/venice_sunset_1k.hdr' },
+  hdr_city: { label: 'HDR City', url: '/hdr/pedestrian_overpass_1k.hdr' },
 };
 
 const TOOLBAR_BTN: React.CSSProperties = {
@@ -127,7 +153,20 @@ function makeSolidTexture(hex: string, srgb: boolean): THREE.Texture {
   return tex;
 }
 
-function buildEnvironmentSourceTexture(preset: Exclude<EnvPreset, 'custom'>): THREE.Texture {
+function disposeObject3DDeep(root: THREE.Object3D) {
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if ((mesh as any).geometry?.dispose) (mesh as any).geometry.dispose();
+    const mat = (mesh as any).material;
+    if (Array.isArray(mat)) {
+      mat.forEach((m) => m?.dispose?.());
+    } else if (mat?.dispose) {
+      mat.dispose();
+    }
+  });
+}
+
+function buildEnvironmentSourceTexture(preset: ProceduralEnvPreset): THREE.Texture {
   const cv = document.createElement('canvas');
   cv.width = 1024;
   cv.height = 512;
@@ -162,33 +201,53 @@ function buildEnvironmentSourceTexture(preset: Exclude<EnvPreset, 'custom'>): TH
   return tex;
 }
 
-function setSceneEnvironment(state: SceneState, source: THREE.Texture, nextEnvMap: THREE.Texture) {
-  const prevSource = state.envSource;
-  const prevEnvMap = state.envMap;
-  state.envSource = source;
-  state.envMap = nextEnvMap;
-  state.scene.environment = nextEnvMap;
-  state.scene.background = source;
-  if (prevSource) prevSource.dispose();
-  if (prevEnvMap) prevEnvMap.dispose();
+function bindSceneEnvironment(state: SceneState, key: string, entry: CachedEnvironment) {
+  state.activeEnvKey = key;
+  state.envSource = entry.source;
+  state.envMap = entry.envMap;
+  state.scene.environment = entry.envMap;
+  state.scene.background = entry.source;
 }
 
-function updateEnvironment(state: SceneState, preset: Exclude<EnvPreset, 'custom'>) {
+function updateEnvironment(state: SceneState, preset: ProceduralEnvPreset) {
+  state.envRequestSeq += 1;
+  const cacheKey = `proc:${preset}`;
+  const cached = state.envCache.get(cacheKey);
+  if (cached) {
+    bindSceneEnvironment(state, cacheKey, cached);
+    return;
+  }
   const source = buildEnvironmentSourceTexture(preset);
   const envMap = state.pmrem.fromEquirectangular(source).texture;
-  setSceneEnvironment(state, source, envMap);
+  const entry: CachedEnvironment = { source, envMap };
+  state.envCache.set(cacheKey, entry);
+  bindSceneEnvironment(state, cacheKey, entry);
 }
 
-function loadHDREnvironment(state: SceneState, url: string, onDone?: () => void) {
+function loadHDREnvironment(state: SceneState, cacheKey: string, url: string, onDone?: () => void) {
+  const requestId = ++state.envRequestSeq;
+  const cached = state.envCache.get(cacheKey);
+  if (cached) {
+    bindSceneEnvironment(state, cacheKey, cached);
+    onDone?.();
+    return;
+  }
   const loader = new RGBELoader();
   loader.setDataType(THREE.HalfFloatType);
   loader.load(
     url,
     (hdr) => {
+      if (requestId !== state.envRequestSeq) {
+        hdr.dispose();
+        onDone?.();
+        return;
+      }
       try {
         hdr.mapping = THREE.EquirectangularReflectionMapping;
         const envMap = state.pmrem.fromEquirectangular(hdr).texture;
-        setSceneEnvironment(state, hdr, envMap);
+        const entry: CachedEnvironment = { source: hdr, envMap };
+        state.envCache.set(cacheKey, entry);
+        bindSceneEnvironment(state, cacheKey, entry);
         appendAppLog({ level: 'info', source: 'preview3d', message: 'HDR environment loaded' });
       } catch (err) {
         appendAppLog({
@@ -204,6 +263,10 @@ function loadHDREnvironment(state: SceneState, url: string, onDone?: () => void)
     },
     undefined,
     (err) => {
+      if (requestId !== state.envRequestSeq) {
+        onDone?.();
+        return;
+      }
       appendAppLog({
         level: 'warn',
         source: 'preview3d',
@@ -213,6 +276,17 @@ function loadHDREnvironment(state: SceneState, url: string, onDone?: () => void)
       onDone?.();
     }
   );
+}
+
+function disposeEnvironmentCache(state: SceneState) {
+  for (const entry of state.envCache.values()) {
+    entry.source.dispose();
+    entry.envMap.dispose();
+  }
+  state.envCache.clear();
+  state.envSource = null;
+  state.envMap = null;
+  state.activeEnvKey = null;
 }
 
 function computeTangentsSafe(geometry: THREE.BufferGeometry) {
@@ -226,7 +300,32 @@ function computeTangentsSafe(geometry: THREE.BufferGeometry) {
   }
 }
 
-function createGeometry(preset: MeshPreset): THREE.BufferGeometry {
+function planeSegmentsForQuality(q: TessellationQuality): number {
+  if (q === 'low') return 128;
+  if (q === 'high') return 512;
+  return 256;
+}
+
+function colorFromKelvin(kelvin: number): THREE.Color {
+  const t = Math.max(1000, Math.min(40000, kelvin)) / 100;
+  let r: number;
+  let g: number;
+  let b: number;
+  if (t <= 66) {
+    r = 255;
+    g = 99.4708025861 * Math.log(t) - 161.1195681661;
+  } else {
+    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+  }
+  if (t >= 66) b = 255;
+  else if (t <= 19) b = 0;
+  else b = 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  const clamp255 = (v: number) => Math.max(0, Math.min(255, v));
+  return new THREE.Color(clamp255(r) / 255, clamp255(g) / 255, clamp255(b) / 255);
+}
+
+function createGeometry(preset: MeshPreset, planeSegments: number): THREE.BufferGeometry {
   if (preset === 'sphere') {
     const geo = new THREE.SphereGeometry(0.75, 160, 120);
     computeTangentsSafe(geo);
@@ -242,9 +341,23 @@ function createGeometry(preset: MeshPreset): THREE.BufferGeometry {
     computeTangentsSafe(geo);
     return geo;
   }
-  const geo = new THREE.PlaneGeometry(2, 2, 320, 320);
+  const seg = Math.max(8, Math.floor(planeSegments));
+  const geo = new THREE.PlaneGeometry(2, 2, seg, seg);
   geo.rotateX(-Math.PI / 2);
   computeTangentsSafe(geo);
+  return geo;
+}
+
+function geometryCacheKey(preset: MeshPreset, planeSegments: number): string {
+  return preset === 'plane' ? `${preset}:${Math.max(8, Math.floor(planeSegments))}` : preset;
+}
+
+function getOrCreateGeometry(state: SceneState, preset: MeshPreset, planeSegments: number): THREE.BufferGeometry {
+  const key = geometryCacheKey(preset, planeSegments);
+  const cached = state.geometryCache.get(key);
+  if (cached) return cached;
+  const geo = createGeometry(preset, planeSegments);
+  state.geometryCache.set(key, geo);
   return geo;
 }
 
@@ -284,6 +397,7 @@ function buildPOMShaderMaterial(initial: {
   heightMap: THREE.Texture;
   normalMap: THREE.Texture;
   roughnessMap: THREE.Texture;
+  metallicMap: THREE.Texture;
 }): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -291,9 +405,12 @@ function buildPOMShaderMaterial(initial: {
       u_heightMap: { value: initial.heightMap },
       u_normalMap: { value: initial.normalMap },
       u_roughnessMap: { value: initial.roughnessMap },
+      u_metallicMap: { value: initial.metallicMap },
       u_tile: { value: new THREE.Vector2(3, 3) },
       u_lightDir: { value: new THREE.Vector3(0.4, 0.8, 0.2).normalize() },
+      u_lightColor: { value: new THREE.Color('#ffffff') },
       u_lightIntensity: { value: 1.15 },
+      u_hemiColor: { value: new THREE.Color('#becdff') },
       u_hemiIntensity: { value: 0.8 },
       u_envIntensity: { value: 0.8 },
       u_normalScale: { value: new THREE.Vector2(1, 1) },
@@ -334,9 +451,12 @@ function buildPOMShaderMaterial(initial: {
       uniform sampler2D u_heightMap;
       uniform sampler2D u_normalMap;
       uniform sampler2D u_roughnessMap;
+      uniform sampler2D u_metallicMap;
       uniform vec2 u_tile;
       uniform vec3 u_lightDir;
+      uniform vec3 u_lightColor;
       uniform float u_lightIntensity;
+      uniform vec3 u_hemiColor;
       uniform float u_hemiIntensity;
       uniform float u_envIntensity;
       uniform vec2 u_normalScale;
@@ -413,6 +533,7 @@ function buildPOMShaderMaterial(initial: {
         vec3 albedoSrgb = texture2D(u_baseMap, uv).rgb;
         vec3 albedo = pow(albedoSrgb, vec3(2.2));
         float rough = clamp(texture2D(u_roughnessMap, uv).r * u_roughnessBias, 0.04, 1.0);
+        float metal = clamp(texture2D(u_metallicMap, uv).r, 0.0, 1.0);
         vec3 normalW = normalize(tbn * buildNormalTangent(uv));
         vec3 L = normalize(u_lightDir);
         vec3 V = normalize(viewDirW);
@@ -421,8 +542,10 @@ function buildPOMShaderMaterial(initial: {
         float hemi = mix(0.35, 1.0, clamp(normalW.y * 0.5 + 0.5, 0.0, 1.0));
         float specPow = mix(128.0, 8.0, rough);
         float spec = pow(max(dot(normalW, H), 0.0), specPow) * (1.0 - rough * 0.85);
-        vec3 color = albedo * (ndotl * u_lightIntensity + hemi * u_hemiIntensity * 0.6 + u_envIntensity * 0.12);
-        color += vec3(spec * (0.35 + u_envIntensity * 0.4));
+        vec3 diffuseColor = albedo * (1.0 - metal);
+        vec3 f0 = mix(vec3(0.04), albedo, metal);
+        vec3 color = diffuseColor * (ndotl * u_lightIntensity * u_lightColor + hemi * u_hemiIntensity * 0.6 * u_hemiColor + u_envIntensity * 0.12);
+        color += f0 * (spec * (0.35 + u_envIntensity * 0.4));
         if (u_debanding > 0.5) color = dither(color, gl_FragCoord.xy);
         gl_FragColor = vec4(max(color, vec3(0.0)), 1.0);
       }
@@ -438,6 +561,7 @@ function applyViewMode(state: SceneState, mode: ViewMode, pomEnabled: boolean) {
   const map =
     mode === 'normal' ? state.textures.normal :
     mode === 'roughness' ? state.textures.roughness :
+    mode === 'metallic' ? state.textures.metallic :
     mode === 'height' ? state.textures.height :
     state.textures.baseColor;
   state.debugMat.map = map;
@@ -450,10 +574,12 @@ export function Viewport3D({
   heightCanvas = null,
   normalCanvas = null,
   roughnessCanvas = null,
+  metallicCanvas = null,
   baseColorVersion = 0,
   heightVersion = 0,
   normalVersion = 0,
   roughnessVersion = 0,
+  metallicVersion = 0,
   frameBudgetMs = 22,
   performanceMode = 'performance_first',
 }: Viewport3DProps) {
@@ -462,6 +588,8 @@ export function Viewport3D({
   const channelCanvasRef = useRef<Partial<Record<Channel, HTMLCanvasElement>>>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const keyERotateRef = useRef(false);
+  const sceneDirtyRef = useRef(true);
+  const lastRenderAtRef = useRef(0);
 
   const [meshPreset, setMeshPreset] = useState<MeshPreset>('plane');
   const [viewMode, setViewMode] = useState<ViewMode>('lit');
@@ -475,12 +603,16 @@ export function Viewport3D({
   const [tileX, setTileX] = useState(3);
   const [tileY, setTileY] = useState(3);
   const [displacement, setDisplacement] = useState(0.15);
+  const [tessellationQuality, setTessellationQuality] = useState<TessellationQuality>('med');
   const [normalScale, setNormalScale] = useState(1.0);
   const [normalFlipY, setNormalFlipY] = useState(false);
   const [heightNormalStrength, setHeightNormalStrength] = useState(0.2);
   const [roughnessBias, setRoughnessBias] = useState(1);
   const [lightRotation, setLightRotation] = useState(30);
   const [lightIntensity, setLightIntensity] = useState(1.15);
+  const [lightColor, setLightColor] = useState('#ffffff');
+  const [lightTemperature, setLightTemperature] = useState(6500);
+  const [ambientTint, setAmbientTint] = useState('#becdff');
   const [envIntensity, setEnvIntensity] = useState(0.8);
   const [envRotation, setEnvRotation] = useState(0);
   const [backgroundBlur, setBackgroundBlur] = useState(0.15);
@@ -493,12 +625,24 @@ export function Viewport3D({
   const [supportsBackgroundBlur, setSupportsBackgroundBlur] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const markSceneDirty = useCallback(() => {
+    sceneDirtyRef.current = true;
+  }, []);
+
   const connected = useMemo(() => ({
     baseColor: !!baseColorCanvas,
     roughness: !!roughnessCanvas,
     normal: !!normalCanvas,
+    metallic: !!metallicCanvas,
     height: !!heightCanvas,
-  }), [baseColorCanvas, roughnessCanvas, normalCanvas, heightCanvas]);
+  }), [baseColorCanvas, roughnessCanvas, normalCanvas, metallicCanvas, heightCanvas]);
+
+  const forceHighPlaneTessellation = useMemo(
+    () => meshPreset === 'plane' && connected.height && (pomEnabled || displacement > 0),
+    [meshPreset, connected.height, pomEnabled, displacement]
+  );
+  const effectiveTessellationQuality: TessellationQuality = forceHighPlaneTessellation ? 'high' : tessellationQuality;
+  const planeSegments = useMemo(() => planeSegmentsForQuality(effectiveTessellationQuality), [effectiveTessellationQuality]);
 
   const signature = useMemo(
     () => [
@@ -506,8 +650,15 @@ export function Viewport3D({
       `h:${heightCanvas ? 1 : 0}:${heightVersion}`,
       `n:${normalCanvas ? 1 : 0}:${normalVersion}`,
       `r:${roughnessCanvas ? 1 : 0}:${roughnessVersion}`,
+      `m:${metallicCanvas ? 1 : 0}:${metallicVersion}`,
     ].join('|'),
-    [baseColorCanvas, baseColorVersion, heightCanvas, heightVersion, normalCanvas, normalVersion, roughnessCanvas, roughnessVersion]
+    [
+      baseColorCanvas, baseColorVersion,
+      heightCanvas, heightVersion,
+      normalCanvas, normalVersion,
+      roughnessCanvas, roughnessVersion,
+      metallicCanvas, metallicVersion
+    ]
   );
 
   const tileXRef = useRef(tileX);
@@ -533,6 +684,42 @@ export function Viewport3D({
   useEffect(() => { qualityRef.current.scale = qualityScale; }, [qualityScale]);
 
   useEffect(() => {
+    markSceneDirty();
+  }, [
+    markSceneDirty,
+    signature,
+    meshPreset,
+    planeSegments,
+    viewMode,
+    envPreset,
+    toneMapping,
+    toneExposure,
+    debanding,
+    tileX,
+    tileY,
+    displacement,
+    normalScale,
+    normalFlipY,
+    heightNormalStrength,
+    roughnessBias,
+    lightRotation,
+    lightIntensity,
+    lightColor,
+    lightTemperature,
+    ambientTint,
+    envIntensity,
+    envRotation,
+    backgroundBlur,
+    showGrid,
+    showWire,
+    pomEnabled,
+    pomScale,
+    pomSteps,
+    autoRotateSpeed,
+    qualityScale,
+  ]);
+
+  useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key.toLowerCase() === 'e') keyERotateRef.current = true;
     };
@@ -556,7 +743,8 @@ export function Viewport3D({
     const state = sceneRef.current;
     if (!state) return;
     positionCamera(state, meshPreset);
-  }, [meshPreset]);
+    markSceneDirty();
+  }, [meshPreset, markSceneDirty]);
 
   const onScreenshot = useCallback(() => {
     const state = sceneRef.current;
@@ -566,7 +754,7 @@ export function Viewport3D({
       const url = state.renderer.domElement.toDataURL('image/png');
       const a = document.createElement('a');
       a.href = url;
-      a.download = `nhance_preview_${Date.now()}.png`;
+      a.download = `atomicgraph_preview_${Date.now()}.png`;
       a.click();
       appendAppLog({ level: 'info', source: 'preview3d', message: '3D screenshot exported' });
     } catch (err) {
@@ -580,13 +768,19 @@ export function Viewport3D({
     const state = sceneRef.current;
     if (!state) return;
     const url = URL.createObjectURL(file);
-    loadHDREnvironment(state, url, () => URL.revokeObjectURL(url));
+    const cacheKey = `custom:${file.name}:${file.size}:${file.lastModified}`;
+    loadHDREnvironment(state, cacheKey, url, () => {
+      URL.revokeObjectURL(url);
+      markSceneDirty();
+    });
     setEnvPreset('custom');
-  }, []);
+  }, [markSceneDirty]);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    sceneDirtyRef.current = true;
+    lastRenderAtRef.current = 0;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#121927');
@@ -605,6 +799,7 @@ export function Viewport3D({
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      sceneDirtyRef.current = true;
     };
     resize();
     host.appendChild(renderer.domElement);
@@ -616,18 +811,38 @@ export function Viewport3D({
     controls.maxDistance = 6;
     controls.maxPolarAngle = Math.PI * 0.49;
 
+    // Inset compass: Blender-style axis colors (X red, Y green, Z blue).
+    const compassScene = new THREE.Scene();
+    const compassCamera = new THREE.PerspectiveCamera(40, 1, 0.01, 10);
+    compassCamera.position.set(0, 0, 2.4);
+    compassCamera.lookAt(0, 0, 0);
+    const compassRoot = new THREE.Group();
+    const origin = new THREE.Vector3(0, 0, 0);
+    compassRoot.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, 0.78, BLENDER_AXIS.x, 0.22, 0.1));
+    compassRoot.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), origin, 0.78, BLENDER_AXIS.y, 0.22, 0.1));
+    compassRoot.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), origin, 0.78, BLENDER_AXIS.z, 0.22, 0.1));
+    compassScene.add(compassRoot);
+    const compassBg = new THREE.Mesh(
+      new THREE.CircleGeometry(1.08, 48),
+      new THREE.MeshBasicMaterial({ color: '#10192a', transparent: true, opacity: 0.72, depthWrite: false, depthTest: false })
+    );
+    compassBg.position.z = -0.15;
+    compassScene.add(compassBg);
+    const rendererSize = new THREE.Vector2();
+
     const baseFallback = makeSolidTexture('#7f8898', true);
     const heightFallback = makeSolidTexture('#7f7f7f', false);
     const normalFallback = makeSolidTexture('#8080ff', false);
     const roughFallback = makeSolidTexture('#bebebe', false);
+    const metallicFallback = makeSolidTexture('#000000', false);
     configureTexture(baseFallback, true, tileXRef.current, tileYRef.current);
     configureTexture(heightFallback, false, tileXRef.current, tileYRef.current);
     configureTexture(normalFallback, false, tileXRef.current, tileYRef.current);
     configureTexture(roughFallback, false, tileXRef.current, tileYRef.current);
+    configureTexture(metallicFallback, false, tileXRef.current, tileYRef.current);
 
     const pbrMat = new THREE.MeshStandardMaterial({
       color: '#8f97a6',
-      metalness: 0,
       roughness: 0.85,
       map: baseFallback,
       displacementMap: heightFallback,
@@ -635,13 +850,18 @@ export function Viewport3D({
       normalMap: normalFallback,
       normalScale: new THREE.Vector2(normalScale, normalScale),
       roughnessMap: roughFallback,
+      metalnessMap: metallicFallback,
+      metalness: 1,
     });
     pbrMat.dithering = debanding;
 
     const debugMat = new THREE.MeshBasicMaterial({ map: baseFallback, color: '#ffffff' });
     debugMat.dithering = debanding;
 
-    const mesh = new THREE.Mesh(createGeometry(meshPreset), pbrMat);
+    const geometryCache = new Map<string, THREE.BufferGeometry>();
+    const initialGeo = createGeometry(meshPreset, planeSegments);
+    geometryCache.set(geometryCacheKey(meshPreset, planeSegments), initialGeo);
+    const mesh = new THREE.Mesh(initialGeo, pbrMat);
     scene.add(mesh);
 
     const hemiLight = new THREE.HemisphereLight('#becdff', '#252933', envIntensity);
@@ -658,6 +878,7 @@ export function Viewport3D({
       heightMap: heightFallback,
       normalMap: normalFallback,
       roughnessMap: roughFallback,
+      metallicMap: metallicFallback,
     });
 
     const state: SceneState = {
@@ -674,17 +895,23 @@ export function Viewport3D({
       pmrem: new THREE.PMREMGenerator(renderer),
       envSource: null,
       envMap: null,
+      activeEnvKey: null,
+      envCache: new Map<string, CachedEnvironment>(),
+      envRequestSeq: 0,
+      geometryCache,
       textures: {
         baseColor: baseFallback,
         height: heightFallback,
         normal: normalFallback,
         roughness: roughFallback,
+        metallic: metallicFallback,
       },
       fallbacks: {
         baseColor: baseFallback,
         height: heightFallback,
         normal: normalFallback,
         roughness: roughFallback,
+        metallic: metallicFallback,
       },
       wireframeMesh: null,
       pomMat,
@@ -693,7 +920,7 @@ export function Viewport3D({
 
     setSupportsBackgroundBlur('backgroundBlurriness' in state.scene);
     sceneRef.current = state;
-    updateEnvironment(state, envPreset === 'custom' ? 'studio' : envPreset);
+    updateEnvironment(state, 'studio');
     positionCamera(state, meshPreset);
     applyViewMode(state, viewModeRef.current, pomEnabledRef.current);
 
@@ -707,12 +934,14 @@ export function Viewport3D({
       drag.lastX = ev.clientX;
       controls.enabled = false;
       renderer.domElement.style.cursor = 'ew-resize';
+      sceneDirtyRef.current = true;
       ev.preventDefault();
     };
     const onPointerMove = (ev: PointerEvent) => {
       if (!drag.active) return;
       const dx = ev.clientX - drag.lastX;
       drag.lastX = ev.clientX;
+      sceneDirtyRef.current = true;
       setEnvRotation((prev) => {
         let next = prev + dx * 0.35;
         while (next < 0) next += 360;
@@ -725,6 +954,7 @@ export function Viewport3D({
       drag.active = false;
       controls.enabled = true;
       renderer.domElement.style.cursor = '';
+      sceneDirtyRef.current = true;
     };
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('pointermove', onPointerMove);
@@ -741,10 +971,20 @@ export function Viewport3D({
     let frameCount = 0;
     const lastAdjustRef = { at: performance.now() };
 
-    const onControlStart = () => { interacting = true; };
-    const onControlEnd = () => { interacting = false; };
+    const onControlStart = () => {
+      interacting = true;
+      sceneDirtyRef.current = true;
+    };
+    const onControlEnd = () => {
+      interacting = false;
+      sceneDirtyRef.current = true;
+    };
+    const onControlChange = () => {
+      sceneDirtyRef.current = true;
+    };
     controls.addEventListener('start', onControlStart);
     controls.addEventListener('end', onControlEnd);
+    controls.addEventListener('change', onControlChange);
 
     const render = () => {
       state.raf = requestAnimationFrame(render);
@@ -752,16 +992,54 @@ export function Viewport3D({
       const deltaSec = Math.max(0, (now - prev) / 1000);
       prev = now;
 
-      if (autoRotateRef.current > 0) state.mesh.rotation.y += autoRotateRef.current * deltaSec;
+      const hasAutoRotate = autoRotateRef.current > 0;
+      if (hasAutoRotate) {
+        state.mesh.rotation.y += autoRotateRef.current * deltaSec;
+        sceneDirtyRef.current = true;
+      }
       if (state.pomMat) {
         const effectiveSteps = Math.max(4, Math.floor(pomStepsRef.current * qualityRef.current.scale));
         state.pomMat.uniforms.u_pomScale.value = pomScaleRef.current;
         state.pomMat.uniforms.u_pomSteps.value = effectiveSteps;
       }
+      const controlsChanged = state.controls.update();
+      if (controlsChanged) sceneDirtyRef.current = true;
+
+      const msSinceLastRender = now - (lastRenderAtRef.current || 0);
+      const shouldRender =
+        sceneDirtyRef.current ||
+        interacting ||
+        hasAutoRotate ||
+        msSinceLastRender >= FORCE_RENDER_INTERVAL_MS;
+
+      if (!shouldRender) {
+        return;
+      }
+      if (!sceneDirtyRef.current && !interacting && !hasAutoRotate && msSinceLastRender < IDLE_RENDER_INTERVAL_MS) {
+        return;
+      }
 
       const frameStart = performance.now();
-      state.controls.update();
       state.renderer.render(state.scene, state.camera);
+
+      compassRoot.quaternion.copy(state.camera.quaternion).invert();
+      state.renderer.getSize(rendererSize);
+      const size = Math.max(70, Math.min(COMPASS_SIZE, Math.floor(Math.min(rendererSize.x, rendererSize.y) * 0.2)));
+      const vx = rendererSize.x - size - COMPASS_MARGIN;
+      const vy = rendererSize.y - size - COMPASS_MARGIN;
+      const prevAutoClear = state.renderer.autoClear;
+      state.renderer.autoClear = false;
+      state.renderer.clearDepth();
+      state.renderer.setScissorTest(true);
+      state.renderer.setViewport(vx, vy, size, size);
+      state.renderer.setScissor(vx, vy, size, size);
+      state.renderer.render(compassScene, compassCamera);
+      state.renderer.setScissorTest(false);
+      state.renderer.setViewport(0, 0, rendererSize.x, rendererSize.y);
+      state.renderer.autoClear = prevAutoClear;
+      sceneDirtyRef.current = false;
+      lastRenderAtRef.current = now;
+
       const frameMs = performance.now() - frameStart;
 
       frameTimes[frameHead] = frameMs;
@@ -825,17 +1103,20 @@ export function Viewport3D({
 
     return () => {
       cancelAnimationFrame(state.raf);
+      state.envRequestSeq += 1;
       observer.disconnect();
       controls.removeEventListener('start', onControlStart);
       controls.removeEventListener('end', onControlEnd);
+      controls.removeEventListener('change', onControlChange);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
       state.controls.dispose();
-      state.mesh.geometry.dispose();
       state.pbrMat.dispose();
       state.debugMat.dispose();
       if (state.pomMat) state.pomMat.dispose();
+      for (const geo of state.geometryCache.values()) geo.dispose();
+      state.geometryCache.clear();
       state.grid.geometry.dispose();
       if (Array.isArray(state.grid.material)) state.grid.material.forEach((m) => m.dispose());
       else state.grid.material.dispose();
@@ -844,15 +1125,17 @@ export function Viewport3D({
         disposeWireframeMesh(state.wireframeMesh);
         state.wireframeMesh = null;
       }
-      for (const key of ['baseColor', 'height', 'normal', 'roughness'] as const) {
+      disposeObject3DDeep(compassRoot);
+      disposeObject3DDeep(compassBg);
+      for (const key of ['baseColor', 'height', 'normal', 'roughness', 'metallic'] as const) {
         releaseCanvasTexture(channelCanvasRef.current[key]);
       }
       baseFallback.dispose();
       heightFallback.dispose();
       normalFallback.dispose();
       roughFallback.dispose();
-      if (state.envSource) state.envSource.dispose();
-      if (state.envMap) state.envMap.dispose();
+      metallicFallback.dispose();
+      disposeEnvironmentCache(state);
       state.pmrem.dispose();
       state.renderer.dispose();
       channelCanvasRef.current = {};
@@ -865,11 +1148,10 @@ export function Viewport3D({
   useEffect(() => {
     const state = sceneRef.current;
     if (!state) return;
-    state.mesh.geometry.dispose();
-    state.mesh.geometry = createGeometry(meshPreset);
+    state.mesh.geometry = getOrCreateGeometry(state, meshPreset, planeSegments);
     if (showWire) rebuildWireframeOverlay(state);
     positionCamera(state, meshPreset);
-  }, [meshPreset]);
+  }, [meshPreset, planeSegments, showWire]);
 
   useEffect(() => {
     const state = sceneRef.current;
@@ -892,6 +1174,8 @@ export function Viewport3D({
     state.pbrMat.displacementScale = displacement;
     state.pbrMat.normalScale.set(normalScale, normalFlipY ? -normalScale : normalScale);
     state.pbrMat.roughness = Math.max(0.03, Math.min(1, 0.85 * roughnessBias));
+    state.pbrMat.metalnessMap = state.textures.metallic;
+    state.pbrMat.metalness = 1;
     if (connected.normal) {
       state.pbrMat.normalMap = state.textures.normal;
       state.pbrMat.bumpMap = null;
@@ -910,24 +1194,30 @@ export function Viewport3D({
     }
     state.pbrMat.needsUpdate = true;
     applyViewMode(state, viewModeRef.current, pomEnabledRef.current);
-  }, [displacement, normalScale, normalFlipY, roughnessBias, connected.normal, connected.height, heightNormalStrength]);
+  }, [displacement, normalScale, normalFlipY, roughnessBias, connected.normal, connected.height, heightNormalStrength, connected.metallic]);
 
   useEffect(() => {
     const state = sceneRef.current;
     if (!state) return;
     const ang = THREE.MathUtils.degToRad(lightRotation);
+    const sunColor = new THREE.Color(lightColor).multiply(colorFromKelvin(lightTemperature));
+    const hemiColor = new THREE.Color(ambientTint);
     state.dirLight.intensity = lightIntensity;
+    state.dirLight.color.copy(sunColor);
     state.hemiLight.intensity = envIntensity;
+    state.hemiLight.color.copy(hemiColor);
     state.pbrMat.envMapIntensity = envIntensity;
     state.dirLight.position.set(Math.cos(ang) * 2.6, 2.25, Math.sin(ang) * 2.6);
     if (state.pomMat) {
       const lightDir = state.dirLight.position.clone().normalize();
       state.pomMat.uniforms.u_lightDir.value.copy(lightDir);
       state.pomMat.uniforms.u_lightIntensity.value = lightIntensity;
+      state.pomMat.uniforms.u_lightColor.value.copy(sunColor);
+      state.pomMat.uniforms.u_hemiColor.value.copy(hemiColor);
       state.pomMat.uniforms.u_hemiIntensity.value = envIntensity;
       state.pomMat.uniforms.u_envIntensity.value = envIntensity;
     }
-  }, [lightRotation, lightIntensity, envIntensity]);
+  }, [lightRotation, lightIntensity, lightColor, lightTemperature, ambientTint, envIntensity]);
 
   useEffect(() => {
     const state = sceneRef.current;
@@ -939,9 +1229,18 @@ export function Viewport3D({
     const state = sceneRef.current;
     if (!state) return;
     if (envPreset === 'custom') return;
+    if (envPreset === 'hdr_studio' || envPreset === 'hdr_city') {
+      const preset = BUILTIN_HDR_PRESETS[envPreset];
+      loadHDREnvironment(state, `hdr:${envPreset}`, preset.url, () => {
+        setLoadError(null);
+        markSceneDirty();
+      });
+      return;
+    }
     updateEnvironment(state, envPreset);
     setLoadError(null);
-  }, [envPreset]);
+    markSceneDirty();
+  }, [envPreset, markSceneDirty]);
 
   useEffect(() => {
     const state = sceneRef.current;
@@ -962,7 +1261,7 @@ export function Viewport3D({
   useEffect(() => {
     const state = sceneRef.current;
     if (!state) return;
-    for (const tex of [state.textures.baseColor, state.textures.height, state.textures.normal, state.textures.roughness]) {
+    for (const tex of [state.textures.baseColor, state.textures.height, state.textures.normal, state.textures.roughness, state.textures.metallic]) {
       const srgb = tex === state.textures.baseColor;
       configureTexture(tex, srgb, tileX, tileY);
     }
@@ -999,6 +1298,7 @@ export function Viewport3D({
       }
       if (channel === 'normal') state.pbrMat.normalMap = connected.normal ? tex : null;
       if (channel === 'roughness') state.pbrMat.roughnessMap = tex;
+      if (channel === 'metallic') state.pbrMat.metalnessMap = tex;
       state.pbrMat.needsUpdate = true;
 
       if (state.pomMat) {
@@ -1006,6 +1306,7 @@ export function Viewport3D({
         if (channel === 'height') state.pomMat.uniforms.u_heightMap.value = tex;
         if (channel === 'normal') state.pomMat.uniforms.u_normalMap.value = tex;
         if (channel === 'roughness') state.pomMat.uniforms.u_roughnessMap.value = tex;
+        if (channel === 'metallic') state.pomMat.uniforms.u_metallicMap.value = tex;
       }
       applyViewMode(state, viewModeRef.current, pomEnabledRef.current);
     };
@@ -1046,6 +1347,7 @@ export function Viewport3D({
     applyCanvasTexture('height', heightCanvas, false, heightVersion);
     applyCanvasTexture('normal', normalCanvas, false, normalVersion);
     applyCanvasTexture('roughness', roughnessCanvas, false, roughnessVersion);
+    applyCanvasTexture('metallic', metallicCanvas, false, metallicVersion);
     if (state.pomMat) {
       state.pomMat.uniforms.u_hasNormal.value = connected.normal ? 1 : 0;
       state.pomMat.uniforms.u_hasHeight.value = connected.height ? 1 : 0;
@@ -1055,10 +1357,12 @@ export function Viewport3D({
     signature,
     connected.normal,
     connected.height,
+    connected.metallic,
     baseColorCanvas, baseColorVersion,
     heightCanvas, heightVersion,
     normalCanvas, normalVersion,
     roughnessCanvas, roughnessVersion,
+    metallicCanvas, metallicVersion,
   ]);
 
   return (
@@ -1093,6 +1397,7 @@ export function Viewport3D({
             <option value="baseColor">BaseColor</option>
             <option value="normal">Normal</option>
             <option value="roughness">Roughness</option>
+            <option value="metallic">Metallic</option>
             <option value="height">Height</option>
           </select>
         </label>
@@ -1103,6 +1408,8 @@ export function Viewport3D({
             <option value="overcast">Overcast</option>
             <option value="sunset">Sunset</option>
             <option value="neutral">Neutral</option>
+            <option value="hdr_studio">HDR Studio</option>
+            <option value="hdr_city">HDR City</option>
             <option value="custom">Custom</option>
           </select>
         </label>
@@ -1117,8 +1424,31 @@ export function Viewport3D({
       </div>
 
       <div style={{ borderBottom: '1px solid #2d3547', padding: '4px 8px', display: 'flex', gap: 8, background: '#182032', flexShrink: 0 }}>
-        {([['Base', connected.baseColor], ['Normal', connected.normal], ['Rough', connected.roughness], ['Height', connected.height]] as const).map(([name, ok]) => (
-          <span key={name} style={{ fontSize: 9, color: ok ? '#a8ebc6' : '#f2c290', border: `1px solid ${ok ? '#2f5f49' : '#5f4b2f'}`, background: ok ? '#1a2a24' : '#2a2319', borderRadius: 999, padding: '1px 7px' }}>{name}: {ok ? 'connected' : 'fallback'}</span>
+        {([
+          ['D', 'Diffuse', connected.baseColor],
+          ['N', 'Normal', connected.normal],
+          ['R', 'Roughness', connected.roughness],
+          ['M', 'Metallic', connected.metallic],
+          ['H', 'Height', connected.height],
+        ] as const).map(([short, label, ok]) => (
+          <span
+            key={short}
+            title={`${label}: ${ok ? 'connected' : 'fallback'}`}
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              letterSpacing: 0.4,
+              color: ok ? '#a8ebc6' : '#f2c290',
+              border: `1px solid ${ok ? '#2f5f49' : '#5f4b2f'}`,
+              background: ok ? '#1a2a24' : '#2a2319',
+              borderRadius: 999,
+              padding: '1px 8px',
+              minWidth: 18,
+              textAlign: 'center',
+            }}
+          >
+            {short}
+          </span>
         ))}
         {!connected.normal && connected.height && <span style={{ fontSize: 9, color: '#d9c6ff', border: '1px solid #52406e', background: '#231d31', borderRadius: 999, padding: '1px 7px' }}>normal from height fallback</span>}
         <span style={{ marginLeft: 'auto', fontSize: 9, color: '#7182a8' }}>E + drag: rotate env</span>
@@ -1132,6 +1462,20 @@ export function Viewport3D({
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Tile X ({tileX.toFixed(2)})<input type="range" min={1} max={12} step={0.25} value={tileX} onChange={(e) => setTileX(Number(e.target.value))} /></label>
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Tile Y ({tileY.toFixed(2)})<input type="range" min={1} max={12} step={0.25} value={tileY} onChange={(e) => setTileY(Number(e.target.value))} /></label>
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Displacement ({displacement.toFixed(3)})<input type="range" min={0} max={0.5} step={0.005} value={displacement} onChange={(e) => setDisplacement(Number(e.target.value))} /></label>
+            <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', alignItems: 'center', gap: 6 }}>
+              Tessellation
+              <select value={tessellationQuality} onChange={(e) => setTessellationQuality(e.target.value as TessellationQuality)} className="nt-select">
+                <option value="low">Low (128)</option>
+                <option value="med">Medium (256)</option>
+                <option value="high">High (512)</option>
+              </select>
+            </label>
+            {meshPreset === 'plane' && (
+              <div style={{ fontSize: 9, color: '#8192b8' }}>
+                Plane segments: {planeSegments}
+                {forceHighPlaneTessellation ? ' (forced High by height displacement/POM)' : ''}
+              </div>
+            )}
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Normal Strength ({normalScale.toFixed(2)})<input type="range" min={0} max={2} step={0.02} value={normalScale} onChange={(e) => setNormalScale(Number(e.target.value))} /></label>
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={normalFlipY} onChange={(e) => setNormalFlipY(e.target.checked)} />Flip Normal Y</label>
             {!connected.normal && <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Height to Normal ({heightNormalStrength.toFixed(2)})<input type="range" min={0} max={0.6} step={0.01} value={heightNormalStrength} onChange={(e) => setHeightNormalStrength(Number(e.target.value))} /></label>}
@@ -1141,6 +1485,18 @@ export function Viewport3D({
             <div style={{ color: '#dce6ff', fontWeight: 700, fontSize: 11 }}>Lighting and Environment</div>
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Light Rotation ({Math.round(lightRotation)}deg)<input type="range" min={-180} max={180} step={1} value={lightRotation} onChange={(e) => setLightRotation(Number(e.target.value))} /></label>
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Sun ({lightIntensity.toFixed(2)})<input type="range" min={0} max={2.4} step={0.05} value={lightIntensity} onChange={(e) => setLightIntensity(Number(e.target.value))} /></label>
+            <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', alignItems: 'center', gap: 6 }}>
+              Sun Color
+              <input type="color" value={lightColor} onChange={(e) => setLightColor(e.target.value)} />
+            </label>
+            <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              Sun Temp ({Math.round(lightTemperature)}K)
+              <input type="range" min={1500} max={12000} step={50} value={lightTemperature} onChange={(e) => setLightTemperature(Number(e.target.value))} />
+            </label>
+            <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', alignItems: 'center', gap: 6 }}>
+              Ambient Tint
+              <input type="color" value={ambientTint} onChange={(e) => setAmbientTint(e.target.value)} />
+            </label>
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Environment ({envIntensity.toFixed(2)})<input type="range" min={0} max={2} step={0.05} value={envIntensity} onChange={(e) => setEnvIntensity(Number(e.target.value))} /></label>
             <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Env Rotation ({Math.round(envRotation)}deg)<input type="range" min={0} max={360} step={1} value={envRotation} onChange={(e) => setEnvRotation(Number(e.target.value))} /></label>
             {supportsBackgroundBlur && <label style={{ fontSize: 10, color: '#9eb0d7', display: 'flex', flexDirection: 'column', gap: 3 }}>Background Blur ({backgroundBlur.toFixed(2)})<input type="range" min={0} max={1} step={0.01} value={backgroundBlur} onChange={(e) => setBackgroundBlur(Number(e.target.value))} /></label>}

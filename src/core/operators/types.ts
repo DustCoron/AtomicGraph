@@ -38,6 +38,10 @@ export interface EditorActions {
   removeNode: (nodeId: string) => void;
   duplicateNode: (nodeId: string) => string | null;
   copyNode: (nodeId: string) => void;
+  copyNodeParams: (nodeId: string) => void;
+  pasteNodeParams: (nodeId: string) => void;
+  resetNodeParams: (nodeId: string) => void;
+  canPasteNodeParams: (nodeId: string) => boolean;
   pasteNodeAt: (graphX: number, graphY: number) => string | null;
   removeEdge: (edgeId: string) => void;
   getEdgeById: (edgeId: string) => EdgeData | undefined;

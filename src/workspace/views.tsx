@@ -8,8 +8,14 @@ import { getExportPreset, getOutputNodeForChannel, OutputChannel, resolveOutputC
 import { PerformanceMode, RendererPerfSample, ViewportPerfSample, ViewportQualityState } from '../core/perf';
 import { MonitorMode, MonitorSuiteRun, getRunOverallSeverity, severityWeight } from '../core/monitor';
 import { GraphContextMenuRequest, GraphEditor } from '../components/GraphEditor';
-import { Viewport } from '../components/Viewport';
-import { Viewport3D } from '../components/Viewport3D';
+const LazyViewport = React.lazy(async () => {
+  const mod = await import('../components/Viewport');
+  return { default: mod.Viewport };
+});
+const LazyViewport3D = React.lazy(async () => {
+  const mod = await import('../components/Viewport3D');
+  return { default: mod.Viewport3D };
+});
 
 export interface UniformRow {
   name: string;
@@ -63,15 +69,21 @@ export interface AppContextValue {
   onAddNode: (type: string, x?: number, y?: number) => void;
   onDeleteNode: (id: string) => void;
   onSelectionChange: (id: string | null) => void;
+  onSelectionSetChange?: (ids: string[]) => void;
   onCanvasClick?: () => void;
   onRequestContextMenu?: (req: GraphContextMenuRequest) => void;
   onCanvasInteractionStart?: () => void;
   onCanvasInteractionEnd?: () => void;
+  onVisibleNodeIdsChange?: (ids: string[]) => void;
   nodePreviews?: Record<string, string>;
   outputPreviewSurfaces?: Partial<Record<OutputChannel, OutputPreviewSurface>>;
   nodeTimings?: Record<string, number>;
   graphViewCommandNonce?: number;
   graphViewCommandType?: 'reset' | 'frame_all' | null;
+  snapEnabled: boolean;
+  snapGridSize: number;
+  setSnapEnabled: (enabled: boolean) => void;
+  setSnapGridSize: (size: number) => void;
 
   previewShader: CompiledShader | null;
   codeShader: CompiledShader | null;
@@ -85,6 +97,7 @@ export interface AppContextValue {
   pinnedPreviewNodeId: string | null;
   onPinPreview: (nodeId: string | null) => void;
   previewFrameBudgetMs: number;
+  preview3dReady: boolean;
   performanceMode: PerformanceMode;
   viewportQuality: ViewportQualityState;
   rendererPerf: RendererPerfSample | null;
@@ -328,8 +341,10 @@ export function GraphView() {
         onAddNode={app.onAddNode}
         onDelNode={app.onDeleteNode}
         onSelectionChange={app.onSelectionChange}
+        onSelectionSetChange={app.onSelectionSetChange}
         onCanvasInteractionStart={app.onCanvasInteractionStart}
         onCanvasInteractionEnd={app.onCanvasInteractionEnd}
+        onVisibleNodeIdsChange={app.onVisibleNodeIdsChange}
         onNodeOpen={onNodeOpen}
         onCanvasClick={app.onCanvasClick}
         onRequestContextMenu={app.onRequestContextMenu}
@@ -337,6 +352,9 @@ export function GraphView() {
         nodeTimings={app.nodeTimings}
         viewCommandNonce={app.graphViewCommandNonce}
         viewCommandType={app.graphViewCommandType}
+        onToggleSnap={() => app.setSnapEnabled(!app.snapEnabled)}
+        snapEnabled={app.snapEnabled}
+        snapSize={app.snapGridSize}
       />
       <FpsOverlay stats={app.stats} backend="WebGPU" />
     </div>
@@ -472,18 +490,26 @@ export function PreviewView() {
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        <Viewport
-          compiled={app.previewShader}
-          tile={app.tile}
-          resolutionScale={app.previewResScale}
-          inlineErrors={false}
-          onShaderError={app.onPreviewError}
-          onResolutionChange={onVpResize}
-          onPerfSample={app.onViewportPerfSample}
-          performanceMode={app.performanceMode}
-          frameBudgetMs={app.previewFrameBudgetMs}
-          graphHash={app.graphPerfHash}
-        />
+        <React.Suspense
+          fallback={
+            <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12 }}>
+              Loading 2D preview...
+            </div>
+          }
+        >
+          <LazyViewport
+            compiled={app.previewShader}
+            tile={app.tile}
+            resolutionScale={app.previewResScale}
+            inlineErrors={false}
+            onShaderError={app.onPreviewError}
+            onResolutionChange={onVpResize}
+            onPerfSample={app.onViewportPerfSample}
+            performanceMode={app.performanceMode}
+            frameBudgetMs={app.previewFrameBudgetMs}
+            graphHash={app.graphPerfHash}
+          />
+        </React.Suspense>
       </div>
     </div>
   );
@@ -799,22 +825,39 @@ export function AtomGraphView({ viewId }: { viewId: string }) {
 
 export function Preview3DView() {
   const app = useApp();
+  if (!app.preview3dReady) {
+    return (
+      <div style={{ width: '100%', height: '100%', background: '#1b2230', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12, letterSpacing: 0.4 }}>
+        Preparing 3D preview after node warmup...
+      </div>
+    );
+  }
   const surfaces = app.outputPreviewSurfaces;
 
   return (
     <div style={{ width: '100%', height: '100%', background: '#1b2230' }}>
-      <Viewport3D
-        baseColorCanvas={surfaces?.baseColor?.canvas ?? null}
-        baseColorVersion={surfaces?.baseColor?.version ?? 0}
-        roughnessCanvas={surfaces?.roughness?.canvas ?? null}
-        roughnessVersion={surfaces?.roughness?.version ?? 0}
-        normalCanvas={surfaces?.normal?.canvas ?? null}
-        normalVersion={surfaces?.normal?.version ?? 0}
-        heightCanvas={surfaces?.height?.canvas ?? null}
-        heightVersion={surfaces?.height?.version ?? 0}
-        frameBudgetMs={app.previewFrameBudgetMs}
-        performanceMode={app.performanceMode}
-      />
+      <React.Suspense
+        fallback={
+          <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12 }}>
+            Loading 3D module...
+          </div>
+        }
+      >
+        <LazyViewport3D
+          baseColorCanvas={surfaces?.baseColor?.canvas ?? null}
+          baseColorVersion={surfaces?.baseColor?.version ?? 0}
+          roughnessCanvas={surfaces?.roughness?.canvas ?? null}
+          roughnessVersion={surfaces?.roughness?.version ?? 0}
+          normalCanvas={surfaces?.normal?.canvas ?? null}
+          normalVersion={surfaces?.normal?.version ?? 0}
+          metallicCanvas={surfaces?.metallic?.canvas ?? null}
+          metallicVersion={surfaces?.metallic?.version ?? 0}
+          heightCanvas={surfaces?.height?.canvas ?? null}
+          heightVersion={surfaces?.height?.version ?? 0}
+          frameBudgetMs={app.previewFrameBudgetMs}
+          performanceMode={app.performanceMode}
+        />
+      </React.Suspense>
     </div>
   );
 }
@@ -1199,6 +1242,7 @@ export function ExplorerView() {
     baseColor: getOutputNodeForChannel(app.graph, 'baseColor'),
     roughness: getOutputNodeForChannel(app.graph, 'roughness'),
     normal: getOutputNodeForChannel(app.graph, 'normal'),
+    metallic: getOutputNodeForChannel(app.graph, 'metallic'),
     height: getOutputNodeForChannel(app.graph, 'height')
   }), [app.graph.nodes]);
   const nodeList = useMemo(() => {
@@ -1214,7 +1258,7 @@ export function ExplorerView() {
     );
   }, [app.graph.edges]);
   const outputMap = useMemo(() => resolveOutputChannels(app.graph), [app.graph.nodes, app.graph.edges]);
-  const outChannels: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'height'];
+  const outChannels: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'metallic', 'height'];
   const preset = useMemo(() => getExportPreset('pbr_default'), []);
 
   const selectNode = useCallback((nodeId: string) => {
@@ -1225,7 +1269,7 @@ export function ExplorerView() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#242730' }}>
       <div style={{ flex: 1, overflow: 'auto', padding: 8, fontSize: 11 }}>
         <ExplorerBranchRow
-          label="project.sbs"
+          label="atomicgraph.ag"
           depth={0}
           open={open.has('root')}
           onToggle={() => toggle('root')}

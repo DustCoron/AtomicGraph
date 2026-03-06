@@ -137,7 +137,7 @@ export function downloadAppLogsFile() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `nhance-texture-logs-${stamp}.log`;
+  a.download = `atomicgraph-logs-${stamp}.log`;
   a.click();
   URL.revokeObjectURL(url);
 }

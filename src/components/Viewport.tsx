@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CompiledShader, UniformLayoutEntry } from '../core/compiler';
 import { GPUQuadRenderer } from '../core/gpu-renderer';
 import { appendAppLog } from '../core/logs';
@@ -117,6 +117,7 @@ export function Viewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const cvRef = useRef<HTMLCanvasElement>(null);
   const errRef = useRef<HTMLDivElement>(null);
+  const [previewSide, setPreviewSide] = useState(0);
 
   const gpuRef = useRef<{
     renderer?: GPUQuadRenderer;
@@ -468,9 +469,22 @@ export function Viewport({
     };
   }, []);
 
+  useEffect(() => {
+    const host = containerRef.current;
+    if (!host || typeof ResizeObserver === 'undefined') return;
+    const updateSize = () => {
+      const side = Math.max(1, Math.floor(Math.min(host.clientWidth, host.clientHeight)));
+      setPreviewSide((prev) => (prev === side ? prev : side));
+    };
+    updateSize();
+    const observer = new ResizeObserver(() => updateSize());
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', background: '#11151f', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-      <div style={{ aspectRatio: '1/1', width: '100%', maxWidth: '100%', maxHeight: '100%', position: 'relative', outline: '1px solid #23293a' }}>
+      <div style={{ width: previewSide || '100%', height: previewSide || '100%', position: 'relative', outline: '1px solid #23293a', flex: '0 0 auto' }}>
         <canvas ref={cvRef} style={{ display: 'block', width: '100%', height: '100%', cursor: 'grab' }} />
       </div>
       <div ref={errRef} style={{ display: 'none', position: 'absolute', bottom: 8, left: 8, right: 8, background: '#2a0c0c', border: '1px solid #a43333', color: '#ffadad', fontSize: 10, padding: '6px 8px', borderRadius: 4 }} />

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Redo2, Undo2 } from 'lucide-react';
+import { Crosshair, Download, FolderOpen, Hash, Maximize2, Redo2, RotateCcw, Save, Undo2, Wand2 } from 'lucide-react';
 import { GraphContextMenuRequest } from './components/GraphEditor';
 import { CommandPalette } from './components/CommandPalette';
 import { NodePickerModal } from './components/NodePickerModal';
@@ -37,46 +37,51 @@ const INIT_DATA: GraphData = {
   schemaVersion: 1,
   resolution: 512,
   nodes: [
-    { id: 'out_base', type: 'output_baseColor', x: 840, y: 120, params: {} },
-    { id: 'out_rough', type: 'output_roughness', x: 840, y: 260, params: {} },
-    { id: 'out_normal', type: 'output_normal', x: 840, y: 400, params: {} },
-    { id: 'out_height', type: 'output_height', x: 840, y: 540, params: {} },
+    { id: 'out_base', type: 'output_baseColor', x: 1664, y: 104, params: {} },
+    { id: 'out_rough', type: 'output_roughness', x: 1664, y: 304, params: {} },
+    { id: 'out_normal', type: 'output_normal', x: 1664, y: 504, params: {} },
+    { id: 'out_metal', type: 'output_metallic', x: 1664, y: 704, params: {} },
+    { id: 'out_height', type: 'output_height', x: 1664, y: 904, params: {} },
 
-    { id: 'base_color', type: 'uniform_color', x: 120, y: 40, params: { r: 0.16, g: 0.26, b: 0.36 } },
-    { id: 'spots_main', type: 'bnw_spots2_v2', x: 120, y: 120, params: {
+    { id: 'base_color', type: 'uniform_color', x: 80, y: 90, params: { r: 0.16, g: 0.26, b: 0.36 } },
+    { id: 'spots_main', type: 'bnw_spots2_v2', x: 80, y: 380, params: {
       scale: 16, tileOffsetX: 0.0, tileOffsetY: 0.0, seed: 4242,
       nonSquareExpansion: true, grainAmount: 0.2, grainThreshold: 0.88, contrast: 1.1
     } },
-    { id: 'perlin_deposit', type: 'perlin', x: 120, y: 260, params: { scale: 4.6, seed: 1337, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
-    { id: 'gaussian_noise', type: 'gaussian_noise', x: 120, y: 340, params: { scale: 12, mean: 0.5, stdDev: 0.16, seed: 7331, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
-    { id: 'warp_motion', type: 'warp', x: 340, y: 260, params: { strength: 0.2 } },
-    { id: 'edge_main', type: 'edge_detect', x: 360, y: 420, params: { radius: 1.2, strength: 1.4 } },
-    { id: 'levels_main', type: 'levels', x: 560, y: 240, params: { inMin: 0.03, inMax: 0.97, gamma: 0.9 } },
-    { id: 'remap_main', type: 'remap', x: 560, y: 360, params: { inLo: 0.1, inHi: 0.9, outLo: 0.0, outHi: 1.0 } },
-    { id: 'blend_height', type: 'blend', x: 760, y: 300, params: { mode: 'multiply', opacity: 0.74 } },
-    { id: 'normal_from_height', type: 'height_to_normal', x: 760, y: 420, params: { strength: 1.35, radius: 1.2, flipY: false } },
+    { id: 'transform_spots', type: 'transform_2d', x: 384, y: 380, params: { offsetX: 0.02, offsetY: -0.01, rotation: 14.0, scale: 1.08, tile: true } },
+    { id: 'safe_spots', type: 'safe_transform', x: 688, y: 380, params: { offsetX: 0.0, offsetY: 0.0, scale: 1.0, tile: false } },
+    { id: 'histogram_height', type: 'histogram_range', x: 992, y: 380, params: { inMin: 0.08, inMax: 0.92, outMin: 0.0, outMax: 1.0 } },
+    { id: 'levels_main', type: 'levels', x: 1296, y: 380, params: { inMin: 0.03, inMax: 0.97, gamma: 0.9 } },
+    { id: 'highpass_rough', type: 'highpass_grayscale', x: 1296, y: 612, params: { radius: 1.6, intensity: 1.25 } },
+    { id: 'normal_from_height', type: 'height_to_normal', x: 1296, y: 844, params: { strength: 2.0, radius: 1.0, flipY: false } },
+    { id: 'normal_finalize', type: 'normal_normalize', x: 1504, y: 844, params: { flipY: false } },
   ],
   edges: [
-    { id: 'e1', fromId: 'spots_main', fromPort: 0, toId: 'blend_height', toPort: 0 },
-    { id: 'e2', fromId: 'perlin_deposit', fromPort: 0, toId: 'warp_motion', toPort: 0 },
-    { id: 'e3', fromId: 'warp_motion', fromPort: 0, toId: 'edge_main', toPort: 0 },
-    { id: 'e4', fromId: 'gaussian_noise', fromPort: 0, toId: 'blend_height', toPort: 1 },
-    { id: 'e5', fromId: 'blend_height', fromPort: 0, toId: 'levels_main', toPort: 0 },
-    { id: 'e6', fromId: 'levels_main', fromPort: 0, toId: 'remap_main', toPort: 0 },
-    { id: 'e7', fromId: 'remap_main', fromPort: 0, toId: 'normal_from_height', toPort: 0 },
-    { id: 'e8', fromId: 'remap_main', fromPort: 0, toId: 'out_height', toPort: 0 },
-    { id: 'e9', fromId: 'normal_from_height', fromPort: 0, toId: 'out_normal', toPort: 0 },
-    { id: 'e11', fromId: 'edge_main', fromPort: 0, toId: 'out_rough', toPort: 0 },
+    { id: 'e1', fromId: 'spots_main', fromPort: 0, toId: 'transform_spots', toPort: 0 },
+    { id: 'e2', fromId: 'transform_spots', fromPort: 0, toId: 'safe_spots', toPort: 0 },
+    { id: 'e3', fromId: 'safe_spots', fromPort: 0, toId: 'histogram_height', toPort: 0 },
+    { id: 'e4', fromId: 'histogram_height', fromPort: 0, toId: 'levels_main', toPort: 0 },
+    { id: 'e5', fromId: 'levels_main', fromPort: 0, toId: 'highpass_rough', toPort: 0 },
+    { id: 'e6', fromId: 'levels_main', fromPort: 0, toId: 'normal_from_height', toPort: 0 },
+    { id: 'e7', fromId: 'normal_from_height', fromPort: 0, toId: 'normal_finalize', toPort: 0 },
+    { id: 'e8', fromId: 'normal_finalize', fromPort: 0, toId: 'out_normal', toPort: 0 },
+    { id: 'e9', fromId: 'levels_main', fromPort: 0, toId: 'out_height', toPort: 0 },
+    { id: 'e10', fromId: 'highpass_rough', fromPort: 0, toId: 'out_rough', toPort: 0 },
+    { id: 'e11', fromId: 'levels_main', fromPort: 0, toId: 'out_metal', toPort: 0 },
     { id: 'e12', fromId: 'base_color', fromPort: 0, toId: 'out_base', toPort: 0 }
   ],
   frames: [
-    { id: 'fr_outputs', x: 760, y: 40, width: 320, height: 240, label: 'Outputs', color: '#4d78bc' }
+    { id: 'fr_outputs', x: 1608, y: 52, width: 344, height: 972, label: 'Outputs', color: '#4d78bc' }
   ]
 };
 
 const MAX_HISTORY = 100;
 const NODE_THUMB_SIZE = 96;
+const DEFAULT_GRID_SNAP = 32;
+const AUTOSAVE_KEY = 'atomicgraph.autosave.v1';
+const ENABLE_DEBUG_FUZZ_UI = false;
 const FRAME_COLORS = ['#4d78bc', '#2f9e7f', '#a97b2c', '#b1597a', '#6b66c7'];
+const snapToGrid = (value: number, gridSize: number): number => Math.round(value / gridSize) * gridSize;
 const cloneGraph = (data: GraphData): GraphData => JSON.parse(JSON.stringify(data));
 
 function buildNodePreviewTemplateGraph(resolution: number): GraphData {
@@ -161,6 +166,23 @@ const shortcutMatches = (shortcut: string | undefined, e: KeyboardEvent): boolea
 };
 
 interface NodeClipboard { type: string; x: number; y: number; params: Record<string, any>; }
+interface NodeParamClipboard { sourceType: string; params: Record<string, any>; }
+type PreviewCompileWorkerRequest =
+  | { type: 'set_graph'; signature: string; graph: GraphData }
+  | {
+      type: 'compile_job';
+      signature: string;
+      requestKey: string;
+      mode: 'node' | 'output';
+      nodeId: string;
+      nodeOutputPort: number;
+      outputChannel: OutputChannel;
+    };
+type PreviewCompileWorkerResponse =
+  | { type: 'ready' }
+  | { type: 'compiled'; signature: string; requestKey: string; compiled: CompiledShader }
+  | { type: 'compile_error'; signature: string; requestKey: string; error: string }
+  | { type: 'fatal'; error: string };
 
 function isSubgraphLike(value: any): value is GraphData {
   return !!value && Array.isArray(value.nodes) && Array.isArray(value.edges);
@@ -217,6 +239,91 @@ function isSubgraphCapableType(type: string): boolean {
   return type === 'atom_graph' || type === 'perlin';
 }
 
+function buildAutoLayoutDemoGraph(): GraphData {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    resolution: 512,
+    nodes: [
+      { id: 'n_base', type: 'uniform_color', x: 120, y: 120, params: { r: 0.22, g: 0.30, b: 0.38 } },
+      { id: 'n_noise_a', type: 'perlin', x: 180, y: 180, params: { scale: 5.2, seed: 42, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
+      { id: 'n_noise_b', type: 'gaussian_noise', x: 220, y: 150, params: { scale: 10, mean: 0.5, stdDev: 0.17, seed: 91, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
+      { id: 'n_transform_a', type: 'transform_2d', x: 160, y: 230, params: { offsetX: 0.01, offsetY: 0.02, rotation: 8.0, scale: 1.05, tile: true } },
+      { id: 'n_warp_a', type: 'warp', x: 210, y: 250, params: { strength: 0.26 } },
+      { id: 'n_warp_b', type: 'warp', x: 250, y: 200, params: { strength: 0.18 } },
+      { id: 'n_uv', type: 'uv', x: 200, y: 300, params: {} },
+      { id: 'n_vec_warp', type: 'vector_warp', x: 280, y: 270, params: { intensity: 0.18, centered: true, tile: true } },
+      { id: 'n_edge', type: 'edge_detect', x: 290, y: 190, params: { radius: 1.2, strength: 1.4 } },
+      { id: 'n_blend_h', type: 'blend', x: 320, y: 220, params: { mode: 'multiply', opacity: 0.72 } },
+      { id: 'n_non_uni', type: 'non_uniform_blur', x: 300, y: 260, params: { radius: 2.0, samples: 4 } },
+      { id: 'n_hist', type: 'histogram_range', x: 330, y: 150, params: { inMin: 0.1, inMax: 0.9, outMin: 0.0, outMax: 1.0 } },
+      { id: 'n_levels_h', type: 'levels', x: 300, y: 120, params: { inMin: 0.04, inMax: 0.97, gamma: 0.9 } },
+      { id: 'n_remap_h', type: 'remap', x: 360, y: 170, params: { inLo: 0.08, inHi: 0.9, outLo: 0, outHi: 1 } },
+      { id: 'n_norm', type: 'height_to_normal', x: 390, y: 210, params: { strength: 1.6, radius: 1.0, flipY: false } },
+      { id: 'n_norm_fix', type: 'normal_normalize', x: 420, y: 240, params: { flipY: false } },
+      { id: 'out_base', type: 'output_baseColor', x: 430, y: 100, params: {} },
+      { id: 'out_rough', type: 'output_roughness', x: 450, y: 180, params: {} },
+      { id: 'out_normal', type: 'output_normal', x: 470, y: 260, params: {} },
+      { id: 'out_metal', type: 'output_metallic', x: 500, y: 140, params: {} },
+      { id: 'out_height', type: 'output_height', x: 520, y: 220, params: {} },
+    ],
+    edges: [
+      { id: 'd1', fromId: 'n_noise_a', fromPort: 0, toId: 'n_transform_a', toPort: 0 },
+      { id: 'd1b', fromId: 'n_transform_a', fromPort: 0, toId: 'n_warp_a', toPort: 0 },
+      { id: 'd2', fromId: 'n_noise_b', fromPort: 0, toId: 'n_warp_b', toPort: 0 },
+      { id: 'd2b', fromId: 'n_warp_b', fromPort: 0, toId: 'n_vec_warp', toPort: 0 },
+      { id: 'd2c', fromId: 'n_uv', fromPort: 0, toId: 'n_vec_warp', toPort: 1 },
+      { id: 'd3', fromId: 'n_warp_a', fromPort: 0, toId: 'n_blend_h', toPort: 0 },
+      { id: 'd4', fromId: 'n_warp_b', fromPort: 0, toId: 'n_blend_h', toPort: 1 },
+      { id: 'd5', fromId: 'n_blend_h', fromPort: 0, toId: 'n_non_uni', toPort: 0 },
+      { id: 'd5b', fromId: 'n_noise_a', fromPort: 0, toId: 'n_non_uni', toPort: 1 },
+      { id: 'd5c', fromId: 'n_non_uni', fromPort: 0, toId: 'n_hist', toPort: 0 },
+      { id: 'd6', fromId: 'n_hist', fromPort: 0, toId: 'n_levels_h', toPort: 0 },
+      { id: 'd6b', fromId: 'n_levels_h', fromPort: 0, toId: 'n_remap_h', toPort: 0 },
+      { id: 'd7', fromId: 'n_remap_h', fromPort: 0, toId: 'n_norm', toPort: 0 },
+      { id: 'd8', fromId: 'n_remap_h', fromPort: 0, toId: 'out_height', toPort: 0 },
+      { id: 'd9', fromId: 'n_norm', fromPort: 0, toId: 'n_norm_fix', toPort: 0 },
+      { id: 'd9b', fromId: 'n_norm_fix', fromPort: 0, toId: 'out_normal', toPort: 0 },
+      { id: 'd10', fromId: 'n_edge', fromPort: 0, toId: 'out_rough', toPort: 0 },
+      { id: 'd11', fromId: 'n_vec_warp', fromPort: 0, toId: 'n_edge', toPort: 0 },
+      { id: 'd12', fromId: 'n_base', fromPort: 0, toId: 'out_base', toPort: 0 },
+      { id: 'd13', fromId: 'n_levels_h', fromPort: 0, toId: 'out_metal', toPort: 0 },
+    ],
+    frames: [
+      { id: 'demo_out', x: 420, y: 70, width: 340, height: 260, label: 'Outputs', color: '#4d78bc' },
+    ],
+  };
+}
+
+function resolveThumbnailOutputChannel(snapshot: GraphData): OutputChannel {
+  const mapping = resolveOutputChannels(snapshot);
+  if (mapping.height) return 'height';
+  if (mapping.baseColor) return 'baseColor';
+  if (mapping.normal) return 'normal';
+  if (mapping.roughness) return 'roughness';
+  if (mapping.metallic) return 'metallic';
+  return 'baseColor';
+}
+
+function buildPreviewRequestMeta(node: NodeData, previewPort: number, fallbackOutputChannel: OutputChannel): {
+  requestKey: string;
+  mode: 'node' | 'output';
+  outputChannel: OutputChannel;
+} {
+  const nodeOutputChannel = channelFromOutputNodeType(node.type);
+  if (nodeOutputChannel || node.type === 'output') {
+    return {
+      requestKey: `out:${node.id}:${nodeOutputChannel ?? fallbackOutputChannel}`,
+      mode: 'output',
+      outputChannel: nodeOutputChannel ?? fallbackOutputChannel,
+    };
+  }
+  return {
+    requestKey: `node:${node.id}:p${previewPort}`,
+    mode: 'node',
+    outputChannel: fallbackOutputChannel,
+  };
+}
+
 export default function App() {
   const engine = useRef<GraphEngine | null>(null);
   const tex = useRef<TextureEngine | null>(null);
@@ -230,7 +337,10 @@ export default function App() {
   const [patternSize, setPatternSize] = useState<number>(engine.current.resolution || 512);
   const previewResolution = useMemo(() => Math.min(patternSize, 1024), [patternSize]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [visibleNodeIds, setVisibleNodeIds] = useState<string[]>([]);
   const [clipboard, setClipboard] = useState<NodeClipboard | null>(null);
+  const paramClipboardRef = useRef<NodeParamClipboard | null>(null);
   const [codeShader, setCodeShader] = useState<CompiledShader | null>(null);
   const [previewShader, setPreviewShader] = useState<CompiledShader | null>(null);
   const [nodePreviews, setNodePreviews] = useState<Record<string, string>>({});
@@ -252,6 +362,7 @@ export default function App() {
 
   const [interacting, setInteracting] = useState(false);
   const [pinnedPreviewNodeId, setPinnedPreviewNodeId] = useState<string | null>(null);
+  const [nodePreviewWarmupDone, setNodePreviewWarmupDone] = useState(false);
   const interactTimerRef = useRef(0);
   const INTERACT_DEBOUNCE = 300;
   const LQ_SCALE = 0.5;
@@ -270,6 +381,7 @@ export default function App() {
   const [thumbnailBlockedUntil, setThumbnailBlockedUntil] = useState(0);
   const thumbnailBlockTimerRef = useRef(0);
   const [previewWorkPending, setPreviewWorkPending] = useState(false);
+  const [previewCompileWorkerReady, setPreviewCompileWorkerReady] = useState(false);
   const compileDebounceTimerRef = useRef(0);
   const previewProgramKeyRef = useRef('');
   const previewRuntimeKeyRef = useRef('');
@@ -280,6 +392,10 @@ export default function App() {
   const lastThumbnailMsRef = useRef(0);
   const lastReadbackMsRef = useRef(0);
   const lastUiCommitMsRef = useRef(0);
+  const previewCompileWorkerRef = useRef<Worker | null>(null);
+  const previewCompileWorkerReadyRef = useRef(false);
+  const previewCompileWorkerDisabledRef = useRef(false);
+  const previewCompiledShadersRef = useRef<Map<string, CompiledShader>>(new Map());
 
   const { root, floating, setActiveTab, resetLayout, addView, savePreset, loadPreset, getPresetNames } = useWorkspace();
   const { hasGraphTab, has2DPreviewTab, has3DPreviewTab } = useMemo(() => {
@@ -305,19 +421,44 @@ export default function App() {
     };
   }, [floating, root]);
   const shouldRenderNodePreviews = hasGraphTab;
-  const shouldRenderOutputSurfaces = has2DPreviewTab || has3DPreviewTab;
+  const shouldRenderOutputSurfaces = has3DPreviewTab;
+  const preview3dReady = useMemo(() => {
+    if (!has3DPreviewTab) return false;
+    if (previewWorkPending || !!compileError) return false;
+    return nodePreviewWarmupDone || !shouldRenderNodePreviews;
+  }, [has3DPreviewTab, previewWorkPending, compileError, nodePreviewWarmupDone, shouldRenderNodePreviews]);
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<GraphContextMenuRequest | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [nodePickerIntent, setNodePickerIntent] = useState<AddNodeIntent | null>(null);
   const [graphViewCommandNonce, setGraphViewCommandNonce] = useState(0);
   const [graphViewCommandType, setGraphViewCommandType] = useState<'reset' | 'frame_all' | null>(null);
+  const [snapEnabled, setSnapEnabled] = useState<boolean>(() => {
+    try {
+      const raw = window.localStorage.getItem('atomicgraph.snap.enabled');
+      return raw == null ? true : raw === '1';
+    } catch {
+      return true;
+    }
+  });
+  const [snapGridSize, setSnapGridSize] = useState<number>(DEFAULT_GRID_SNAP);
+  const [hasAutosave, setHasAutosave] = useState<boolean>(() => {
+    try {
+      return !!window.localStorage.getItem(AUTOSAVE_KEY);
+    } catch {
+      return false;
+    }
+  });
   const [chaosMode, setChaosMode] = useState(false);
   const chaosTimerRef = useRef(0);
   const chaosStepCountRef = useRef(0);
   const [monitorRuns, setMonitorRuns] = useState<MonitorSuiteRun[]>(() => getMonitorRuns());
   const [monitorRunning, setMonitorRunning] = useState(false);
   const [atomViewBindings, setAtomViewBindings] = useState<Record<string, string>>({});
+  const [autoLayoutRunning, setAutoLayoutRunning] = useState(false);
+  const [autoLayoutNotice, setAutoLayoutNotice] = useState<{ tone: 'ok' | 'warn'; text: string } | null>(null);
+  const autoLayoutNoticeTimerRef = useRef(0);
+  const autoLayoutModuleRef = useRef<Promise<typeof import('./core/layout/elkLayout')> | null>(null);
 
   const reportCompileIssue = useCallback((message: string | null, source: string) => {
     setCompileError(message);
@@ -338,6 +479,21 @@ export default function App() {
 
   const setPreviewPending = useCallback((pending: boolean) => {
     setPreviewWorkPending(pending);
+  }, []);
+
+  const showAutoLayoutNotice = useCallback((text: string, tone: 'ok' | 'warn' = 'ok') => {
+    setAutoLayoutNotice({ text, tone });
+    if (autoLayoutNoticeTimerRef.current) window.clearTimeout(autoLayoutNoticeTimerRef.current);
+    autoLayoutNoticeTimerRef.current = window.setTimeout(() => {
+      setAutoLayoutNotice(null);
+      autoLayoutNoticeTimerRef.current = 0;
+    }, 2600);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autoLayoutNoticeTimerRef.current) window.clearTimeout(autoLayoutNoticeTimerRef.current);
+    };
   }, []);
 
   const deferThumbnails = useCallback((ms: number) => {
@@ -382,7 +538,111 @@ export default function App() {
     if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
     if (compileDebounceTimerRef.current) window.clearTimeout(compileDebounceTimerRef.current);
     if (thumbnailBlockTimerRef.current) window.clearTimeout(thumbnailBlockTimerRef.current);
+    if (previewCompileWorkerRef.current) {
+      previewCompileWorkerRef.current.terminate();
+      previewCompileWorkerRef.current = null;
+    }
   }, []);
+
+  useEffect(() => {
+    if (typeof Worker === 'undefined') {
+      previewCompileWorkerDisabledRef.current = true;
+      return;
+    }
+    try {
+      const worker = new Worker(new URL('./core/workers/previewCompile.worker.ts', import.meta.url), { type: 'module' });
+      worker.onmessage = (ev: MessageEvent<PreviewCompileWorkerResponse>) => {
+        const msg = ev.data;
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'ready') {
+          previewCompileWorkerReadyRef.current = true;
+          setPreviewCompileWorkerReady(true);
+          return;
+        }
+        if (msg.type === 'compiled') {
+          if (msg.signature !== outputSigRef.current) return;
+          previewCompiledShadersRef.current.set(msg.requestKey, msg.compiled);
+          return;
+        }
+        if (msg.type === 'compile_error') {
+          if (msg.signature !== outputSigRef.current) return;
+          appendAppLog({
+            level: 'warn',
+            source: 'preview-worker',
+            message: 'Worker preview compile failed',
+            details: `request=${msg.requestKey} error=${msg.error}`,
+            graph_hash: msg.signature,
+          });
+          return;
+        }
+        if (msg.type === 'fatal') {
+          previewCompileWorkerDisabledRef.current = true;
+          previewCompileWorkerReadyRef.current = false;
+          setPreviewCompileWorkerReady(false);
+          previewCompiledShadersRef.current.clear();
+          appendAppLog({
+            level: 'warn',
+            source: 'preview-worker',
+            message: 'Preview compile worker disabled after fatal error',
+            details: msg.error,
+          });
+        }
+      };
+      worker.onerror = (err) => {
+        previewCompileWorkerDisabledRef.current = true;
+        previewCompileWorkerReadyRef.current = false;
+        setPreviewCompileWorkerReady(false);
+        previewCompiledShadersRef.current.clear();
+        appendAppLog({
+          level: 'warn',
+          source: 'preview-worker',
+          message: 'Preview compile worker crashed',
+          details: err.message || String(err),
+        });
+      };
+      previewCompileWorkerRef.current = worker;
+      return () => {
+        worker.terminate();
+        if (previewCompileWorkerRef.current === worker) previewCompileWorkerRef.current = null;
+      };
+    } catch (err: any) {
+      previewCompileWorkerDisabledRef.current = true;
+      previewCompileWorkerReadyRef.current = false;
+      setPreviewCompileWorkerReady(false);
+      appendAppLog({
+        level: 'warn',
+        source: 'preview-worker',
+        message: 'Preview compile worker unavailable',
+        details: err?.message || String(err),
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('atomicgraph.snap.enabled', snapEnabled ? '1' : '0');
+      window.localStorage.setItem('atomicgraph.snap.size', String(snapGridSize));
+    } catch {
+      /* ignore localStorage errors */
+    }
+  }, [snapEnabled, snapGridSize]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const payload = {
+          savedAt: Date.now(),
+          patternSize,
+          graph: graphRef.current,
+        };
+        window.localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
+        setHasAutosave(true);
+      } catch {
+        /* ignore localStorage errors */
+      }
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [graph, patternSize]);
 
   useEffect(() => {
     outputPreviewSurfacesRef.current = outputPreviewSurfaces;
@@ -429,6 +689,84 @@ export default function App() {
     applyMutation(eng => { eng.setResolution(next); }, true);
   }, [applyMutation]);
 
+  const frameAllGraphView = useCallback(() => {
+    setGraphViewCommandType('frame_all');
+    setGraphViewCommandNonce((n) => n + 1);
+  }, []);
+
+  const resetGraphView = useCallback(() => {
+    setGraphViewCommandType('reset');
+    setGraphViewCommandNonce((n) => n + 1);
+  }, []);
+
+  const restoreAutosave = useCallback(() => {
+    try {
+      const raw = window.localStorage.getItem(AUTOSAVE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { graph?: GraphData; patternSize?: number; savedAt?: number };
+      if (!parsed || !parsed.graph || !Array.isArray(parsed.graph.nodes) || !Array.isArray(parsed.graph.edges)) return;
+      applyEngineGraph(parsed.graph);
+      const nextSize = parsed.patternSize ?? parsed.graph.resolution ?? 512;
+      setPatternSize(nextSize);
+      historyRef.current = { past: [], future: [] };
+      setSelectedNodeId(null);
+      appendAppLog({
+        level: 'info',
+        source: 'project-load',
+        message: 'Autosave restored',
+        details: parsed.savedAt ? new Date(parsed.savedAt).toLocaleString() : undefined,
+      });
+    } catch (error) {
+      appendAppLog({
+        level: 'warn',
+        source: 'project-load',
+        message: 'Failed to restore autosave',
+        details: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [applyEngineGraph]);
+
+  const onSelectionSetChange = useCallback((ids: string[]) => {
+    setSelectedNodeIds(ids);
+  }, []);
+
+  const onVisibleNodeIdsChange = useCallback((ids: string[]) => {
+    setVisibleNodeIds((prev) => (
+      prev.length === ids.length && prev.every((id, idx) => id === ids[idx])
+        ? prev
+        : ids
+    ));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedNodeId) {
+      setSelectedNodeIds([]);
+      return;
+    }
+    setSelectedNodeIds((prev) => (
+      prev.length > 0 && prev.includes(selectedNodeId) ? prev : [selectedNodeId]
+    ));
+  }, [selectedNodeId]);
+
+  const loadAutoLayoutDemo = useCallback(() => {
+    const demo = buildAutoLayoutDemoGraph();
+    applyEngineGraph(demo);
+    setPatternSize(demo.resolution || 512);
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+    historyRef.current = { past: [], future: [] };
+    showAutoLayoutNotice('Demo DAG loaded. Run Auto Layout.', 'ok');
+    appendAppLog({ level: 'info', source: 'layout', message: 'Auto-layout demo graph loaded' });
+  }, [applyEngineGraph, showAutoLayoutNotice]);
+
+  const getAutoLayout = useCallback(async () => {
+    if (!autoLayoutModuleRef.current) {
+      autoLayoutModuleRef.current = import('./core/layout/elkLayout');
+    }
+    const mod = await autoLayoutModuleRef.current;
+    return mod.autoLayout;
+  }, []);
+
   const markInteracting = useCallback(() => {
     setInteracting(true);
     if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
@@ -443,10 +781,14 @@ export default function App() {
     markInteracting();
   }, [markInteracting]);
 
+  const snapPos = useCallback((value: number) => (
+    snapEnabled ? snapToGrid(value, snapGridSize) : value
+  ), [snapEnabled, snapGridSize]);
+
   const onMove = useCallback((id: string, pos: { x: number; y: number }) => {
     markInteracting();
-    applyMutation(eng => { eng.moveNode(id, pos.x, pos.y); }, false);
-  }, [applyMutation, markInteracting]);
+    applyMutation(eng => { eng.moveNode(id, snapPos(pos.x), snapPos(pos.y)); }, false);
+  }, [applyMutation, markInteracting, snapPos]);
 
   const onMoveFrame = useCallback((id: string, pos: { x: number; y: number }) => {
     markInteracting();
@@ -515,15 +857,15 @@ export default function App() {
   }, [applyMutation, markInteracting]);
 
   const onAddNode = useCallback((type: string, x?: number, y?: number) => {
-    const nx = x ?? 100 + Math.random() * 200;
-    const ny = y ?? 60 + Math.random() * 240;
+    const nx = snapPos(x ?? 100 + Math.random() * 200);
+    const ny = snapPos(y ?? 60 + Math.random() * 240);
     applyMutation(eng => {
       const created = eng.addNode(type, nx, ny);
       if (!created) return false;
       setSelectedNodeId(created.id);
       return true;
     }, true);
-  }, [applyMutation]);
+  }, [applyMutation, snapPos]);
 
   const onDeleteNode = useCallback((id: string) => {
     const node = graph.nodes.find((n) => n.id === id);
@@ -612,18 +954,82 @@ export default function App() {
     setClipboard({ type: node.type, x: node.x, y: node.y, params: { ...node.params } });
   }, [graph.nodes, selectedNodeId]);
 
+  const copyNodeParams = useCallback((nodeId: string) => {
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node || isOutputNodeType(node.type)) return;
+    paramClipboardRef.current = {
+      sourceType: node.type,
+      params: { ...node.params },
+    };
+  }, [graph.nodes]);
+
+  const resetNodeParams = useCallback((nodeId: string) => {
+    applyMutation((eng) => {
+      const node = eng.serialize().nodes.find((n) => n.id === nodeId);
+      if (!node || isOutputNodeType(node.type)) return false;
+      const def = NODE_REGISTRY[node.type];
+      if (!def) return false;
+      for (const [key, meta] of Object.entries(def.params)) {
+        eng.updateParam(nodeId, key, meta.default);
+      }
+      return true;
+    }, true);
+  }, [applyMutation]);
+
+  const canPasteNodeParams = useCallback((nodeId: string): boolean => {
+    const clip = paramClipboardRef.current;
+    if (!clip) return false;
+    const node = graph.nodes.find((n) => n.id === nodeId);
+    if (!node || isOutputNodeType(node.type)) return false;
+    const targetDef = NODE_REGISTRY[node.type];
+    const sourceDef = NODE_REGISTRY[clip.sourceType];
+    if (!targetDef) return false;
+    for (const [key, value] of Object.entries(clip.params)) {
+      const targetMeta = targetDef.params[key];
+      const sourceMeta = sourceDef?.params?.[key];
+      if (!targetMeta) continue;
+      if (sourceMeta && sourceMeta.type !== targetMeta.type) continue;
+      if (targetMeta.type === 'select' && targetMeta.options && !targetMeta.options.includes(String(value))) continue;
+      return true;
+    }
+    return false;
+  }, [graph.nodes]);
+
+  const pasteNodeParams = useCallback((nodeId: string) => {
+    const clip = paramClipboardRef.current;
+    if (!clip) return;
+    applyMutation((eng) => {
+      const node = eng.serialize().nodes.find((n) => n.id === nodeId);
+      if (!node || isOutputNodeType(node.type)) return false;
+      const targetDef = NODE_REGISTRY[node.type];
+      const sourceDef = NODE_REGISTRY[clip.sourceType];
+      if (!targetDef) return false;
+      let updated = 0;
+      for (const [key, value] of Object.entries(clip.params)) {
+        const targetMeta = targetDef.params[key];
+        const sourceMeta = sourceDef?.params?.[key];
+        if (!targetMeta) continue;
+        if (sourceMeta && sourceMeta.type !== targetMeta.type) continue;
+        if (targetMeta.type === 'select' && targetMeta.options && !targetMeta.options.includes(String(value))) continue;
+        eng.updateParam(nodeId, key, value);
+        updated += 1;
+      }
+      return updated > 0;
+    }, true);
+  }, [applyMutation]);
+
   const pasteClipboard = useCallback((graphX?: number, graphY?: number) => {
     if (!clipboard) return;
     applyMutation(eng => {
-      const px = typeof graphX === 'number' ? graphX : clipboard.x + 40;
-      const py = typeof graphY === 'number' ? graphY : clipboard.y + 40;
+      const px = snapPos(typeof graphX === 'number' ? graphX : clipboard.x + 40);
+      const py = snapPos(typeof graphY === 'number' ? graphY : clipboard.y + 40);
       const created = eng.addNode(clipboard.type, px, py);
       if (!created) return false;
       Object.entries(clipboard.params).forEach(([k, v]) => eng.updateParam(created.id, k, v));
       setSelectedNodeId(created.id);
       return true;
     }, true);
-  }, [applyMutation, clipboard]);
+  }, [applyMutation, clipboard, snapPos]);
 
   const cutSelection = useCallback(() => {
     copySelection();
@@ -635,13 +1041,13 @@ export default function App() {
     const node = graph.nodes.find(n => n.id === selectedNodeId);
     if (!node || isOutputNodeType(node.type)) return;
     applyMutation(eng => {
-      const created = eng.addNode(node.type, node.x + 40, node.y + 40);
+      const created = eng.addNode(node.type, snapPos(node.x + 40), snapPos(node.y + 40));
       if (!created) return false;
       Object.entries(node.params).forEach(([k, v]) => eng.updateParam(created.id, k, v));
       setSelectedNodeId(created.id);
       return true;
     }, true);
-  }, [applyMutation, graph.nodes, selectedNodeId]);
+  }, [applyMutation, graph.nodes, selectedNodeId, snapPos]);
 
   const undo = useCallback(() => {
     const past = historyRef.current.past;
@@ -664,14 +1070,14 @@ export default function App() {
   const addNodeAt = useCallback((type: string, graphX: number, graphY: number): string | null => {
     let createdId: string | null = null;
     applyMutation(eng => {
-      const created = eng.addNode(type, graphX, graphY);
+      const created = eng.addNode(type, snapPos(graphX), snapPos(graphY));
       if (!created) return false;
       createdId = created.id;
       setSelectedNodeId(created.id);
       return true;
     }, true);
     return createdId;
-  }, [applyMutation]);
+  }, [applyMutation, snapPos]);
 
   const connectNodes = useCallback((fromId: string, toId: string, toPort: number, fromPort: number = 0) => {
     let ok = false;
@@ -689,7 +1095,7 @@ export default function App() {
     if (!node || isOutputNodeType(node.type)) return null;
     let createdId: string | null = null;
     applyMutation(eng => {
-      const created = eng.addNode(node.type, node.x + 40, node.y + 40);
+      const created = eng.addNode(node.type, snapPos(node.x + 40), snapPos(node.y + 40));
       if (!created) return false;
       Object.entries(node.params).forEach(([k, v]) => eng.updateParam(created.id, k, v));
       createdId = created.id;
@@ -697,14 +1103,14 @@ export default function App() {
       return true;
     }, true);
     return createdId;
-  }, [applyMutation, graph.nodes]);
+  }, [applyMutation, graph.nodes, snapPos]);
 
   const insertNodeOnEdge = useCallback((edgeId: string, nodeType: string, graphX: number, graphY: number): string | null => {
     const edge = graph.edges.find(e => e.id === edgeId);
     if (!edge) return null;
     let createdId: string | null = null;
     applyMutation(eng => {
-      const created = eng.addNode(nodeType, graphX, graphY);
+      const created = eng.addNode(nodeType, snapPos(graphX), snapPos(graphY));
       if (!created) return false;
       eng.removeEdge(edgeId);
       const a = eng.addEdge(edge.fromId, created.id, 0, edge.fromPort);
@@ -715,12 +1121,12 @@ export default function App() {
       return true;
     }, true);
     return createdId;
-  }, [applyMutation, graph.edges]);
+  }, [applyMutation, graph.edges, snapPos]);
 
   const addNodeFromPort = useCallback((port: { nodeId: string; portIndex: number; direction: 'in' | 'out' }, nodeType: string, graphX: number, graphY: number): string | null => {
     let createdId: string | null = null;
     applyMutation(eng => {
-      const created = eng.addNode(nodeType, graphX, graphY);
+      const created = eng.addNode(nodeType, snapPos(graphX), snapPos(graphY));
       if (!created) return false;
       if (port.direction === 'out') {
         const connected = eng.addEdge(port.nodeId, created.id, 0, port.portIndex);
@@ -734,7 +1140,107 @@ export default function App() {
       return true;
     }, true);
     return createdId;
-  }, [applyMutation]);
+  }, [applyMutation, snapPos]);
+
+  const runAutoLayout = useCallback(async (scope: 'all' | 'selection' = 'all') => {
+    if (autoLayoutRunning) return;
+    const snapshot = graphRef.current;
+    let nodes = snapshot.nodes;
+    let edges = snapshot.edges;
+
+    if (scope === 'selection') {
+      const selectedSet = new Set(selectedNodeIds.filter((id) => snapshot.nodes.some((n) => n.id === id)));
+      if (selectedSet.size < 2) {
+        showAutoLayoutNotice('Select at least 2 nodes for selection layout.', 'warn');
+        return;
+      }
+      nodes = snapshot.nodes.filter((n) => selectedSet.has(n.id));
+      edges = snapshot.edges.filter((e) => selectedSet.has(e.fromId) && selectedSet.has(e.toId));
+    }
+
+    if (nodes.length < 2) {
+      showAutoLayoutNotice('Nothing to layout.', 'warn');
+      return;
+    }
+
+    const oldMinX = Math.min(...nodes.map((n) => n.x));
+    const oldMinY = Math.min(...nodes.map((n) => n.y));
+
+    setAutoLayoutRunning(true);
+    try {
+      const autoLayout = await getAutoLayout();
+      const result = await autoLayout(nodes, edges, {
+        direction: 'RIGHT',
+        layerSpacing: 96,
+        nodeSpacing: 56,
+        edgeRouting: 'ORTHOGONAL',
+        includePorts: true,
+        padding: 28,
+      });
+
+      const positionedNodes = { ...result.nodePositions };
+      const outputNodesInScope = nodes.filter((n) => isOutputNodeType(n.type) && !!positionedNodes[n.id]);
+      if (outputNodesInScope.length > 1) {
+        const nonOutputNodesInScope = nodes.filter((n) => !isOutputNodeType(n.type) && !!positionedNodes[n.id]);
+        const rightMostOutputX = Math.max(...outputNodesInScope.map((n) => positionedNodes[n.id].x));
+        const rightMostNonOutputX = nonOutputNodesInScope.length > 0
+          ? Math.max(...nonOutputNodesInScope.map((n) => positionedNodes[n.id].x))
+          : rightMostOutputX;
+        const alignedOutputX = Math.max(rightMostOutputX, rightMostNonOutputX + 260);
+        for (const node of outputNodesInScope) {
+          positionedNodes[node.id] = { ...positionedNodes[node.id], x: alignedOutputX };
+        }
+      }
+
+      const entries = Object.entries(positionedNodes);
+      if (entries.length === 0) throw new Error('ELK returned no node positions.');
+
+      const layoutMinX = Math.min(...entries.map(([, p]) => p.x));
+      const layoutMinY = Math.min(...entries.map(([, p]) => p.y));
+      const dx = oldMinX - layoutMinX;
+      const dy = oldMinY - layoutMinY;
+
+      let movedCount = 0;
+      const didApply = applyMutation((eng) => {
+        let moved = false;
+        for (const [id, pos] of entries) {
+          const node = eng.nodes.get(id);
+          if (!node) continue;
+          const nx = Math.round(pos.x + dx);
+          const ny = Math.round(pos.y + dy);
+          if (node.x === nx && node.y === ny) continue;
+          eng.moveNode(id, nx, ny);
+          moved = true;
+          movedCount += 1;
+        }
+        return moved;
+      }, true);
+
+      if (!didApply || movedCount === 0) {
+        showAutoLayoutNotice('Auto Layout made no changes.', 'warn');
+        return;
+      }
+
+      markInteracting();
+      appendAppLog({
+        level: 'info',
+        source: 'layout',
+        message: scope === 'selection' ? `selection layout applied (${movedCount} nodes)` : `auto layout applied (${movedCount} nodes)`,
+      });
+      showAutoLayoutNotice(scope === 'selection' ? `Selection layout applied (${movedCount})` : `Auto Layout applied (${movedCount})`, 'ok');
+    } catch (error) {
+      const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      appendAppLog({
+        level: 'error',
+        source: 'layout',
+        message: 'Auto layout failed',
+        details,
+      });
+      showAutoLayoutNotice('Auto Layout failed. See logs.', 'warn');
+    } finally {
+      setAutoLayoutRunning(false);
+    }
+  }, [autoLayoutRunning, selectedNodeIds, applyMutation, markInteracting, showAutoLayoutNotice, getAutoLayout]);
 
   const stepChaosModeOnce = useCallback(() => {
     const snapshot = graphRef.current;
@@ -865,6 +1371,7 @@ export default function App() {
   }, [chaosMode, stepChaosModeOnce]);
 
   useEffect(() => {
+    if (!ENABLE_DEBUG_FUZZ_UI) return;
     const api = {
       start: () => setChaosMode(true),
       stop: () => setChaosMode(false),
@@ -877,6 +1384,10 @@ export default function App() {
       if ((window as any).ntChaos === api) delete (window as any).ntChaos;
     };
   }, [chaosMode, stepChaosModeOnce]);
+
+  useEffect(() => {
+    if (!ENABLE_DEBUG_FUZZ_UI && chaosMode) setChaosMode(false);
+  }, [chaosMode]);
 
   const buildOperatorContext = useCallback((req?: GraphContextMenuRequest): OperatorContext => {
     const selectedNode = selectedNodeId ? graph.nodes.find((n) => n.id === selectedNodeId) : null;
@@ -911,6 +1422,10 @@ export default function App() {
           if (!node || isOutputNodeType(node.type)) return;
           setClipboard({ type: node.type, x: node.x, y: node.y, params: { ...node.params } });
         },
+        copyNodeParams: (nodeId) => copyNodeParams(nodeId),
+        pasteNodeParams: (nodeId) => pasteNodeParams(nodeId),
+        resetNodeParams: (nodeId) => resetNodeParams(nodeId),
+        canPasteNodeParams: (nodeId) => canPasteNodeParams(nodeId),
         pasteNodeAt: (graphX, graphY) => {
           pasteClipboard(graphX, graphY);
           return null;
@@ -923,14 +1438,16 @@ export default function App() {
         undo,
         redo,
         pinPreviewToNode: (nodeId) => setPinnedPreviewNodeId(nodeId),
-        toggleChaosMode: () => setChaosMode((v) => !v),
-        stepChaosModeOnce: () => stepChaosModeOnce(),
+        toggleChaosMode: ENABLE_DEBUG_FUZZ_UI ? () => setChaosMode((v) => !v) : undefined,
+        stepChaosModeOnce: ENABLE_DEBUG_FUZZ_UI ? () => stepChaosModeOnce() : undefined,
       }
     };
   }, [
     addNodeAt,
     addNodeFromPort,
     clipboard,
+    copyNodeParams,
+    canPasteNodeParams,
     connectNodes,
     contextMenu,
     duplicateNodeById,
@@ -939,7 +1456,9 @@ export default function App() {
     onDeleteEdge,
     onDeleteNode,
     pasteClipboard,
+    pasteNodeParams,
     redo,
+    resetNodeParams,
     selectedNodeId,
     stepChaosModeOnce,
     undo
@@ -958,6 +1477,20 @@ export default function App() {
       const mod = e.ctrlKey || e.metaKey;
       const key = (e.key || '').toLowerCase();
 
+      if (mod && key === 'z' && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        undo();
+        return;
+      }
+
+      if (mod && key === 'y' && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        redo();
+        return;
+      }
+
       // Keep cut shortcut explicit (no operator yet).
       if (mod && key === 'x' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
@@ -971,6 +1504,13 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         redo();
+        return;
+      }
+
+      if (!mod && !e.shiftKey && !e.altKey && key === 'f') {
+        e.preventDefault();
+        e.stopPropagation();
+        resetGraphView();
         return;
       }
 
@@ -989,7 +1529,7 @@ export default function App() {
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [buildOperatorContext, contextMenu, cutSelection, nodePickerIntent, paletteOpen, redo]);
+  }, [buildOperatorContext, contextMenu, cutSelection, nodePickerIntent, paletteOpen, redo, resetGraphView, undo]);
 
   const openContextMenu = useCallback((req: GraphContextMenuRequest) => {
     setContextMenu(req);
@@ -1077,10 +1617,61 @@ export default function App() {
     if (mapping.baseColor) return 'baseColor';
     if (mapping.normal) return 'normal';
     if (mapping.roughness) return 'roughness';
+    if (mapping.metallic) return 'metallic';
     return 'baseColor';
   }, [graph.nodes, graph.edges]);
   const outputPreviewPort = OUTPUT_CHANNEL_PORTS[outputPreviewChannel];
   const graphPerfHash = outputAffectingSig;
+
+  useEffect(() => {
+    setNodePreviewWarmupDone(!shouldRenderNodePreviews);
+  }, [outputAffectingSig, shouldRenderNodePreviews]);
+
+  useEffect(() => {
+    previewCompiledShadersRef.current.clear();
+    if (!shouldRenderNodePreviews) return;
+    if (!previewCompileWorkerReady || previewCompileWorkerDisabledRef.current) return;
+    const worker = previewCompileWorkerRef.current;
+    if (!worker) return;
+
+    const snapshot = graphRef.current;
+    const signature = outputAffectingSig;
+    const edgesByFromNode = new Map<string, number[]>();
+    for (const edge of snapshot.edges) {
+      const next = edgesByFromNode.get(edge.fromId);
+      if (next) next.push(edge.fromPort);
+      else edgesByFromNode.set(edge.fromId, [edge.fromPort]);
+    }
+    const outputThumbChannel = resolveThumbnailOutputChannel(snapshot);
+    const getNodePreviewPort = (node: NodeData): number => {
+      const def = NODE_REGISTRY[node.type];
+      if (!def || def.outputs.length <= 1) return 0;
+      const connectedPorts = edgesByFromNode.get(node.id);
+      if (connectedPorts && connectedPorts.length > 0) return Math.max(...connectedPorts);
+      if (node.type === 'split' && def.outputs.length > 4) return 4;
+      return 0;
+    };
+
+    worker.postMessage({
+      type: 'set_graph',
+      signature,
+      graph: snapshot,
+    } satisfies PreviewCompileWorkerRequest);
+
+    for (const node of snapshot.nodes) {
+      const previewPort = getNodePreviewPort(node);
+      const meta = buildPreviewRequestMeta(node, previewPort, outputThumbChannel);
+      worker.postMessage({
+        type: 'compile_job',
+        signature,
+        requestKey: meta.requestKey,
+        mode: meta.mode,
+        nodeId: node.id,
+        nodeOutputPort: previewPort,
+        outputChannel: meta.outputChannel,
+      } satisfies PreviewCompileWorkerRequest);
+    }
+  }, [outputAffectingSig, shouldRenderNodePreviews, previewCompileWorkerReady]);
 
   const onViewportPerfSample = useCallback((sample: ViewportPerfSample) => {
     const merged: RendererPerfSample = {
@@ -1189,6 +1780,10 @@ export default function App() {
           });
           const canvas = renderShaderToSharedCanvas(compiled, 64);
           if (!canvas || canvas.width < 1 || canvas.height < 1) {
+            if (_thumbCtx.unavailableReason) {
+              failures.push(`preview-template: GPU unavailable -> ${_thumbCtx.unavailableReason}`);
+              return { failures, nodeCount: template.nodes.length, caseCount };
+            }
             throw new Error('empty preview canvas');
           }
           caseCount += 1;
@@ -1215,7 +1810,7 @@ export default function App() {
     const suiteStarted = performance.now();
     const snapshot = graphRef.current;
     const checks: MonitorCheckResult[] = [];
-    const outputs: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'height'];
+    const outputs: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'metallic', 'height'];
     try {
 
     const runCheck = async (id: string, label: string, fn: () => Promise<Omit<MonitorCheckResult, 'id' | 'label' | 'durationMs'>> | Omit<MonitorCheckResult, 'id' | 'label' | 'durationMs'>) => {
@@ -1292,8 +1887,15 @@ export default function App() {
     });
 
     await runCheck('preview_state', 'Preview Readiness', () => {
+      const has2DPreview = has2DPreviewTab;
       if (compileError) {
         return { severity: 'fail', message: 'Preview has compile error', details: compileError };
+      }
+      if (!has2DPreview) {
+        return { severity: 'ok', message: '2D preview panel is closed (check skipped)' };
+      }
+      if (previewWorkPending) {
+        return { severity: 'ok', message: 'Preview compile is still pending' };
       }
       if (!previewShader || !codeShader) {
         return { severity: 'warn', message: 'Shader is not compiled yet' };
@@ -1302,6 +1904,10 @@ export default function App() {
     });
 
     await runCheck('performance_budget', 'Frame Budget', () => {
+      const hasAnyPreviewViewport = has2DPreviewTab || has3DPreviewTab;
+      if (!hasAnyPreviewViewport) {
+        return { severity: 'ok', message: 'No preview viewport is open (check skipped)' };
+      }
       if (!rendererPerf) {
         return { severity: 'warn', message: 'No live render samples yet' };
       }
@@ -1390,10 +1996,13 @@ export default function App() {
     compileError,
     previewShader,
     codeShader,
+    previewWorkPending,
     rendererPerf,
     rendererPerfP95,
     rendererPerfP50,
     previewFrameBudgetMs,
+    has2DPreviewTab,
+    has3DPreviewTab,
     compileTimeMs,
     graphPerfHash,
   ]);
@@ -1492,7 +2101,7 @@ export default function App() {
         }
         if (!cancelled) setPreviewPending(false);
       } catch (e: any) {
-        console.error('[NhanceTexture] Preview compile failed:', e);
+        console.error('[AtomicGraph] Preview compile failed:', e);
         const targetInfo = previewTarget.nodeId
           ? `target node=${previewTarget.nodeId} outPort=${previewTarget.port}`
           : `target output=${previewOutputChannel}`;
@@ -1561,7 +2170,18 @@ export default function App() {
     let disposed = false;
     const startSig = outputAffectingSig;
     const snapshot = graphRef.current;
-    const MAX_PREVIEW_NODES = 40;
+    const totalNodes = snapshot.nodes.length;
+    const previewNodeBudget = (() => {
+      if (performanceMode !== 'performance_first') return 40;
+      if (totalNodes >= 420) return 8;
+      if (totalNodes >= 240) return 12;
+      if (totalNodes >= 120) return 18;
+      if (totalNodes >= 64) return 26;
+      return 40;
+    })();
+    const nodePreviewTargetCount = nodePreviewWarmupDone ? previewNodeBudget : totalNodes;
+    const dirtyPriorityCap = totalNodes > 240 ? 8 : totalNodes > 120 ? 12 : 28;
+    const allowRoundRobin = nodePreviewWarmupDone && totalNodes <= 120;
     const nodeById = new Map(snapshot.nodes.map((n) => [n.id, n]));
     const edgesByFromNode = new Map<string, number[]>();
     for (const edge of snapshot.edges) {
@@ -1572,6 +2192,7 @@ export default function App() {
     const plan = tex.current.getPlan();
     const dirtyIds = plan ? getDirtyNodes(plan) : [];
     const pinnedIds = [selectedNodeId, pinnedPreviewNodeId].filter((id): id is string => !!id);
+    const visibleIds = visibleNodeIds.filter((id) => nodeById.has(id));
     const outputIds = snapshot.nodes.filter((n) => isOutputNodeType(n.type)).map((n) => n.id);
     const priorityIds: string[] = [];
     const prioritySet = new Set<string>();
@@ -1581,23 +2202,32 @@ export default function App() {
       priorityIds.push(id);
     };
     pinnedIds.forEach(addPriorityId);
+    visibleIds.forEach(addPriorityId);
     outputIds.forEach(addPriorityId);
-    dirtyIds.forEach(addPriorityId);
+    dirtyIds.slice(0, dirtyPriorityCap).forEach(addPriorityId);
     const restIds = snapshot.nodes
       .map((n) => n.id)
       .filter((id) => !prioritySet.has(id));
     let orderedIds = priorityIds;
-    const remaining = Math.max(0, MAX_PREVIEW_NODES - priorityIds.length);
-    if (remaining > 0 && restIds.length > 0) {
-      const start = thumbnailRoundRobinRef.current % restIds.length;
-      const rotatedRest = restIds.slice(start).concat(restIds.slice(0, start));
-      orderedIds = orderedIds.concat(rotatedRest.slice(0, remaining));
-      thumbnailRoundRobinRef.current = (start + remaining) % restIds.length;
+    if (!nodePreviewWarmupDone) {
+      orderedIds = orderedIds.concat(restIds);
+    } else {
+      const remaining = Math.max(0, nodePreviewTargetCount - priorityIds.length);
+      if (allowRoundRobin && remaining > 0 && restIds.length > 0) {
+        const start = thumbnailRoundRobinRef.current % restIds.length;
+        const rotatedRest = restIds.slice(start).concat(restIds.slice(0, start));
+        orderedIds = orderedIds.concat(rotatedRest.slice(0, remaining));
+        thumbnailRoundRobinRef.current = (start + remaining) % restIds.length;
+      }
     }
     const nodesToRender = orderedIds
-      .slice(0, MAX_PREVIEW_NODES)
+      .slice(0, nodePreviewTargetCount)
       .map((id) => nodeById.get(id))
       .filter((node): node is NonNullable<typeof node> => !!node);
+    if (nodesToRender.length === 0) {
+      setNodePreviewWarmupDone(true);
+      return;
+    }
 
     const w = window as any;
     const scheduleIdle = (cb: (d: IdleDeadline) => void) => {
@@ -1615,14 +2245,7 @@ export default function App() {
     const timings: Record<string, number> = {};
     let idleHandle = 0;
     const compiler = new Compiler(snapshot);
-    const outputThumbChannel: OutputChannel = (() => {
-      const mapping = resolveOutputChannels(snapshot);
-      if (mapping.height) return 'height';
-      if (mapping.baseColor) return 'baseColor';
-      if (mapping.normal) return 'normal';
-      if (mapping.roughness) return 'roughness';
-      return 'baseColor';
-    })();
+    const outputThumbChannel = resolveThumbnailOutputChannel(snapshot);
     const getNodePreviewPort = (nodeId: string): number => {
       const node = nodeById.get(nodeId);
       if (!node) return 0;
@@ -1637,9 +2260,14 @@ export default function App() {
       return 0;
     };
 
-    const batchSize = performanceMode === 'performance_first'
-      ? (viewportQuality.scale <= 0.75 ? 1 : 2)
-      : 2;
+    // Keep startup and heavy graphs smooth: render node previews strictly one-by-one.
+    const batchSize = 1;
+    let warmupMarked = false;
+    const markWarmupDone = () => {
+      if (warmupMarked) return;
+      warmupMarked = true;
+      setNodePreviewWarmupDone(true);
+    };
 
     const step = (deadline: IdleDeadline) => {
       if (disposed) return;
@@ -1650,30 +2278,33 @@ export default function App() {
         const node = nodesToRender[idx++];
         try {
           const t0 = performance.now();
-          const nodeOutputChannel = channelFromOutputNodeType(node.type);
           const previewPort = getNodePreviewPort(node.id);
-          const previewContext = nodeOutputChannel || node.type === 'output'
-            ? `out:${node.id}:${nodeOutputChannel ?? outputThumbChannel}`
-            : `node:${node.id}:p${previewPort}`;
-          const compiled = nodeOutputChannel || node.type === 'output'
-            ? compiler.compile({
-                outputChannel: nodeOutputChannel ?? outputThumbChannel,
-                readable: false,
-              })
-            : compiler.compile({
-                nodeId: node.id,
-                nodeOutputPort: previewPort,
-                readable: false,
-              });
-          const runtimeCompiled = applyRuntimeUniforms(compiled, snapshot);
-          const thumbKey = buildThumbnailKey(runtimeCompiled, NODE_THUMB_SIZE, previewContext);
+          const meta = buildPreviewRequestMeta(node, previewPort, outputThumbChannel);
+          let runtimeCompiled = previewCompiledShadersRef.current.get(meta.requestKey);
+          if (!runtimeCompiled) {
+            const compiled = meta.mode === 'output'
+              ? compiler.compile({
+                  outputChannel: meta.outputChannel,
+                  readable: false,
+                })
+              : compiler.compile({
+                  nodeId: node.id,
+                  nodeOutputPort: previewPort,
+                  readable: false,
+                });
+            runtimeCompiled = applyRuntimeUniforms(compiled, snapshot);
+          } else {
+            previewCompiledShadersRef.current.delete(meta.requestKey);
+          }
+          const thumbKey = buildThumbnailKey(runtimeCompiled, NODE_THUMB_SIZE, meta.requestKey);
           let thumb = nodePreviewImageCacheRef.current.get(thumbKey);
           if (!thumb) {
             const rb0 = performance.now();
             thumb = renderShaderThumbnail(runtimeCompiled, NODE_THUMB_SIZE);
             lastReadbackMsRef.current += performance.now() - rb0;
             nodePreviewImageCacheRef.current.set(thumbKey, thumb);
-            if (nodePreviewImageCacheRef.current.size > 320) {
+            const thumbCacheLimit = totalNodes > 160 ? 160 : 320;
+            if (nodePreviewImageCacheRef.current.size > thumbCacheLimit) {
               const firstKey = nodePreviewImageCacheRef.current.keys().next().value as string | undefined;
               if (firstKey) nodePreviewImageCacheRef.current.delete(firstKey);
             }
@@ -1713,6 +2344,8 @@ export default function App() {
       }
       if (idx < nodesToRender.length) {
         idleHandle = scheduleIdle(step);
+      } else {
+        markWarmupDone();
       }
     };
 
@@ -1730,6 +2363,8 @@ export default function App() {
     shouldRenderNodePreviews,
     selectedNodeId,
     pinnedPreviewNodeId,
+    visibleNodeIds,
+    nodePreviewWarmupDone,
     interacting,
     chaosMode,
     previewWorkPending,
@@ -1740,11 +2375,11 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (!shouldRenderOutputSurfaces || interacting || chaosMode || previewWorkPending) return;
+    if (!shouldRenderOutputSurfaces || !preview3dReady || interacting || chaosMode) return;
     let disposed = false;
     const snapshot = graphRef.current;
     const size = Math.max(128, Math.min(patternSize, 1024));
-    const channels: OutputChannel[] = ['baseColor', 'normal', 'roughness', 'height'];
+    const channels: OutputChannel[] = ['baseColor', 'normal', 'roughness', 'metallic', 'height'];
     const compiler = new Compiler(snapshot);
     const updates: Partial<Record<OutputChannel, { key: string; canvas: HTMLCanvasElement }>> = {};
     const w = window as any;
@@ -1829,11 +2464,11 @@ export default function App() {
   }, [
     outputAffectingSig,
     shouldRenderOutputSurfaces,
+    preview3dReady,
     rawMode,
     patternSize,
     interacting,
     chaosMode,
-    previewWorkPending,
     performanceMode
   ]);
 
@@ -1945,19 +2580,26 @@ export default function App() {
   const appCtx = useMemo<AppContextValue>(() => ({
     graph, selectedNodeId, onMove, onMoveFrame, onResizeFrame, onDeleteFrame, onAddFrameAt, onUpdateFrame, onDeleteEdge, onConnect, onUpdateParam, onAddNode, onDeleteNode,
     onSelectionChange: setSelectedNodeId,
+    onSelectionSetChange,
     onCanvasClick: closeTransientUi,
     onRequestContextMenu: openContextMenu,
     onCanvasInteractionStart,
     onCanvasInteractionEnd,
+    onVisibleNodeIdsChange,
     nodePreviews, outputPreviewSurfaces, nodeTimings,
     graphViewCommandNonce,
     graphViewCommandType,
+    snapEnabled,
+    snapGridSize,
+    setSnapEnabled,
+    setSnapGridSize,
     previewShader, codeShader, compileError, patternSize, previewResolution,
     previewTarget,
     previewResScale,
     interacting,
     pinnedPreviewNodeId,
     previewFrameBudgetMs,
+    preview3dReady,
     performanceMode,
     viewportQuality,
     rendererPerf,
@@ -1981,10 +2623,13 @@ export default function App() {
     onOpenAtomNode,
   }), [
     graph, selectedNodeId, onMove, onMoveFrame, onResizeFrame, onDeleteFrame, onAddFrameAt, onUpdateFrame, onDeleteEdge, onConnect, onUpdateParam, onAddNode, onDeleteNode,
+    onSelectionSetChange,
+    onVisibleNodeIdsChange,
     closeTransientUi, openContextMenu, onCanvasInteractionStart, onCanvasInteractionEnd, nodePreviews, outputPreviewSurfaces, nodeTimings, graphViewCommandNonce, graphViewCommandType,
+    snapEnabled, snapGridSize,
     previewShader, codeShader, compileError, patternSize, previewResolution,
     previewTarget, previewResScale, interacting, pinnedPreviewNodeId,
-    previewFrameBudgetMs, performanceMode, viewportQuality, rendererPerf, rendererPerfP95, rendererPerfP50,
+    previewFrameBudgetMs, preview3dReady, performanceMode, viewportQuality, rendererPerf, rendererPerfP95, rendererPerfP50,
     thumbnailDeferred, graphPerfHash, onViewportPerfSample,
     tile, rawMode, uniformRows, stats, onPreviewError,
     monitorRuns, monitorRunning, runMonitorSuite, clearMonitorRuns,
@@ -1999,7 +2644,7 @@ export default function App() {
     <AppContext.Provider value={appCtx}>
       <div style={rootStyle}>
         <div style={menuBarStyle}>
-          <span style={menuTitleStyle}>Nhance Texture Designer</span>
+          <span style={menuTitleStyle}>AtomicGraph</span>
           <span className="nt-menu-item">File</span>
           <span className="nt-menu-item">Edit</span>
           <span className="nt-menu-item">Tools</span>
@@ -2017,6 +2662,8 @@ export default function App() {
                 <div className="nt-drop-item" onClick={() => { addView('logs', 'Logs'); setWindowMenuOpen(false); }}>New Logs</div>
                 <div className="nt-drop-item" onClick={() => { addView('library', 'Library'); setWindowMenuOpen(false); }}>New Library</div>
                 <div className="nt-drop-item" onClick={() => { addView('explorer', 'Explorer'); setWindowMenuOpen(false); }}>New Explorer</div>
+                <div style={menuDropSep} />
+                <div className="nt-drop-item" onClick={() => { loadAutoLayoutDemo(); setWindowMenuOpen(false); }}>Load Demo DAG (Layout)</div>
                 <div style={menuDropSep} />
                 <div className="nt-drop-item" onClick={() => {
                   const name = prompt('Preset name:');
@@ -2038,7 +2685,7 @@ export default function App() {
             onClick={undo}
             className="nt-btn nt-btn-icon"
             disabled={historyRef.current.past.length === 0}
-            title="Undo (Ctrl+Z)"
+            title="Undo (Ctrl/Cmd+Z)"
             aria-label="Undo"
           >
             <Undo2 size={14} />
@@ -2047,32 +2694,69 @@ export default function App() {
             onClick={redo}
             className="nt-btn nt-btn-icon"
             disabled={historyRef.current.future.length === 0}
-            title="Redo (Ctrl+Y)"
+            title="Redo (Ctrl/Cmd+Y, Ctrl/Cmd+Shift+Z)"
             aria-label="Redo"
           >
             <Redo2 size={14} />
           </button>
           <div style={dividerStyle} />
-          <button onClick={onSave} className="nt-btn">SAVE</button>
-          <button onClick={() => fileInputRef.current?.click()} className="nt-btn">LOAD</button>
+          <button onClick={onSave} className="nt-btn nt-btn-icon" title="Save graph" aria-label="Save">
+            <Save size={14} />
+          </button>
+          <button onClick={() => fileInputRef.current?.click()} className="nt-btn nt-btn-icon" title="Load graph" aria-label="Load">
+            <FolderOpen size={14} />
+          </button>
           <input ref={fileInputRef} type="file" accept=".json" style={{ display: 'none' }} onChange={onLoad} />
           <div style={dividerStyle} />
-          <span style={labelStyle}>SIZE</span>
-          <select value={patternSize} onChange={e => onSetPatternSize(parseInt(e.target.value, 10))} className="nt-select">
+          <span style={{ ...labelStyle, display: 'inline-flex', alignItems: 'center' }} title="Texture size">
+            <Hash size={12} />
+          </span>
+          <select value={patternSize} onChange={e => onSetPatternSize(parseInt(e.target.value, 10))} className="nt-select" title="Texture size">
             {[256, 512, 1024, 2048].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <div style={dividerStyle} />
-          <button onClick={onExport} className="nt-btn">EXPORT</button>
-          <div style={dividerStyle} />
-          <button
-            onClick={() => setChaosMode((v) => !v)}
-            className="nt-btn"
-            style={chaosMode ? { borderColor: '#9b2c2c', color: '#ffd3d3' } : undefined}
-            title="Toggle runtime fuzz mode"
-          >
-            {chaosMode ? 'FUZZ ON' : 'FUZZ OFF'}
+          <button onClick={frameAllGraphView} className="nt-btn nt-btn-icon" title="Frame all graph content" aria-label="Frame all">
+            <Maximize2 size={14} />
           </button>
-          <button onClick={stepChaosModeOnce} className="nt-btn" title="Run one fuzz step">FUZZ STEP</button>
+          <button onClick={resetGraphView} className="nt-btn nt-btn-icon" title="Reset graph camera (F)" aria-label="Reset view">
+            <Crosshair size={14} />
+          </button>
+          <button
+            onClick={() => runAutoLayout('all')}
+            className="nt-btn nt-btn-icon"
+            disabled={autoLayoutRunning}
+            title="Run deterministic ELK layered layout (left to right)"
+            aria-label="Auto layout"
+          >
+            {autoLayoutRunning ? <span style={{ fontSize: 11 }}>...</span> : <Wand2 size={14} />}
+          </button>
+          <button
+            onClick={() => runAutoLayout('selection')}
+            className="nt-btn"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+            disabled={autoLayoutRunning || selectedNodeIds.length < 2}
+            title={selectedNodeIds.length < 2 ? 'Select at least 2 nodes' : 'Layout only selected nodes'}
+          >
+            <Wand2 size={13} />
+            SEL
+          </button>
+          {autoLayoutNotice && (
+            <span style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: autoLayoutNotice.tone === 'warn' ? '#ffb3b3' : '#9ff3ca',
+              letterSpacing: 0.3,
+            }}>
+              {autoLayoutNotice.text}
+            </span>
+          )}
+          <div style={dividerStyle} />
+          <button onClick={onExport} className="nt-btn nt-btn-icon" title="Export textures" aria-label="Export">
+            <Download size={14} />
+          </button>
+          <button onClick={restoreAutosave} className="nt-btn nt-btn-icon" disabled={!hasAutosave} title="Restore last autosave" aria-label="Restore autosave">
+            <RotateCcw size={14} />
+          </button>
         </div>
 
         <Workspace renderView={renderView} />
@@ -2172,6 +2856,8 @@ const _thumbCtx: {
   material?: THREE.ShaderMaterial;
   shaderKey?: string;
   lastSize?: number;
+  unavailableReason?: string;
+  unavailableLogged?: boolean;
 } = {};
 
 function uniformValueKey(value: any): string {
@@ -2204,25 +2890,38 @@ function buildThumbnailKey(compiled: CompiledShader, size: number, context = '')
   return `${size}|${context}|${compiled.hash}|${compiled.vertex.length}|${compiled.fragment.length}|${entries.join('|')}`;
 }
 
-function renderShaderToSharedCanvas(compiled: CompiledShader, size: number): HTMLCanvasElement {
+function renderShaderToSharedCanvas(compiled: CompiledShader, size: number): HTMLCanvasElement | null {
+  if (_thumbCtx.unavailableReason) return null;
+
   if (!_thumbCtx.renderer) {
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    _thumbCtx.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, preserveDrawingBuffer: true, antialias: false });
-    _thumbCtx.renderer.setPixelRatio(1);
-    _thumbCtx.renderer.setSize(size, size, false);
-    _thumbCtx.renderer.setClearColor(0x000000, 1);
-    _thumbCtx.scene = new THREE.Scene();
-    _thumbCtx.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    _thumbCtx.geo = new THREE.PlaneGeometry(2, 2);
-    const placeholder = new THREE.ShaderMaterial({ uniforms: {} });
-    _thumbCtx.mesh = new THREE.Mesh(_thumbCtx.geo, placeholder);
-    _thumbCtx.material = placeholder;
-    _thumbCtx.shaderKey = '';
-    _thumbCtx.scene.add(_thumbCtx.mesh);
-    _thumbCtx.lastSize = size;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      _thumbCtx.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, preserveDrawingBuffer: true, antialias: false });
+      _thumbCtx.renderer.setPixelRatio(1);
+      _thumbCtx.renderer.setSize(size, size, false);
+      _thumbCtx.renderer.setClearColor(0x000000, 1);
+      _thumbCtx.scene = new THREE.Scene();
+      _thumbCtx.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      _thumbCtx.geo = new THREE.PlaneGeometry(2, 2);
+      const placeholder = new THREE.ShaderMaterial({ uniforms: {} });
+      _thumbCtx.mesh = new THREE.Mesh(_thumbCtx.geo, placeholder);
+      _thumbCtx.material = placeholder;
+      _thumbCtx.shaderKey = '';
+      _thumbCtx.scene.add(_thumbCtx.mesh);
+      _thumbCtx.lastSize = size;
+    } catch (err: any) {
+      _thumbCtx.unavailableReason = (err?.message || String(err) || 'WebGL context creation failed').replace(/\s+/g, ' ').trim();
+      if (!_thumbCtx.unavailableLogged) {
+        _thumbCtx.unavailableLogged = true;
+        console.warn(`[thumb] WebGL thumbnails disabled: ${_thumbCtx.unavailableReason}`);
+      }
+      return null;
+    }
   }
+
+  if (!_thumbCtx.renderer || !_thumbCtx.scene || !_thumbCtx.camera) return null;
 
   if (_thumbCtx.lastSize !== size) {
     _thumbCtx.renderer.setSize(size, size, false);
@@ -2274,7 +2973,7 @@ function renderShaderToSharedCanvas(compiled: CompiledShader, size: number): HTM
     material.needsUpdate = false;
   }
 
-  _thumbCtx.renderer.render(_thumbCtx.scene!, _thumbCtx.camera!);
+  _thumbCtx.renderer.render(_thumbCtx.scene, _thumbCtx.camera);
   return _thumbCtx.renderer.domElement;
 }
 
@@ -2286,15 +2985,24 @@ function renderShaderToCanvas(compiled: CompiledShader, size: number, targetCanv
     canvas.height = size;
   }
   const ctx = canvas.getContext('2d');
-  if (ctx) {
+  if (ctx && sharedCanvas) {
     ctx.clearRect(0, 0, size, size);
     ctx.drawImage(sharedCanvas, 0, 0, size, size);
+  } else if (ctx && !sharedCanvas) {
+    ctx.fillStyle = '#16161f';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#6b7280';
+    ctx.font = `bold ${Math.max(8, Math.floor(size * 0.12))}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('NO GPU', size * 0.5, size * 0.5);
   }
   return canvas;
 }
 
 function renderShaderThumbnail(compiled: CompiledShader, size: number): string {
   const canvas = renderShaderToSharedCanvas(compiled, size);
+  if (!canvas) return renderErrorThumbnail(size, 'NO GPU');
   return canvas.toDataURL('image/png');
 }
 
@@ -2334,13 +3042,13 @@ const menuTitleStyle: React.CSSProperties = {
 };
 
 const toolbarStyle: React.CSSProperties = {
-  height: 36, display: 'flex', alignItems: 'center', gap: 8,
+  height: 34, display: 'flex', alignItems: 'center', gap: 6,
   background: 'var(--nt-bg-1)', borderBottom: '1px solid var(--nt-border-1)',
-  padding: '0 10px', flexShrink: 0
+  padding: '0 8px', flexShrink: 0
 };
 
-const labelStyle: React.CSSProperties = { fontSize: 10, color: 'var(--nt-text-2)', letterSpacing: 0.6 };
-const dividerStyle: React.CSSProperties = { width: 1, height: 16, background: 'var(--nt-border-1)', margin: '0 3px' };
+const labelStyle: React.CSSProperties = { fontSize: 9, color: 'var(--nt-text-2)', letterSpacing: 0.4 };
+const dividerStyle: React.CSSProperties = { width: 1, height: 14, background: 'var(--nt-border-1)', margin: '0 2px' };
 
 const menuDropStyle: React.CSSProperties = {
   position: 'absolute', top: '100%', left: 0, marginTop: 4,

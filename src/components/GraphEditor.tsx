@@ -1,16 +1,21 @@
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Magnet, Minus, Plus } from 'lucide-react';
 import { DataType, NodeData, EdgeData, FrameData } from '../core/types';
 import { NODE_REGISTRY, CATEGORIES } from '../core/registry';
 import { isOutputNodeType } from '../core/output';
 import { NodeCard } from './NodeCard';
 
 const ZOOM_MIN = 0.15, ZOOM_MAX = 2.5, ZOOM_STEP = 0.1;
+const DEFAULT_GRID_SIZE = 26;
 const PREVIEW_SIZE = 128;
 const NW = 210, HDR = 36, PREVIEW_H = PREVIEW_SIZE + 12, ROW = 28, PR = 6;
 const FRAME_MIN_W = 180;
 const FRAME_MIN_H = 120;
 const FRAME_HEADER_H = 24;
+const RENDER_VISIBILITY_PADDING_PX = 220;
+const COMPACT_NODE_ZOOM = 0.72;
+const PREVIEW_TEXTURE_ZOOM = 1.05;
 
 const catColor = (t: string) => {
   const cat = NODE_REGISTRY[t]?.category;
@@ -55,6 +60,13 @@ const nodeHeight = (type: string) => {
   return HDR + PREVIEW_H + Math.max(inputParamRows, outputRows, 1) * ROW + 10;
 };
 
+interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
 export type GraphMenuTarget =
   | { kind: 'canvas' }
   | { kind: 'node'; nodeId: string }
@@ -70,21 +82,91 @@ export interface GraphContextMenuRequest {
   target: GraphMenuTarget;
 }
 
-function ZoomBar({ zoom, onZoom, onReset }: any) {
-  const Btn = ({ label, disabled, onClick }: any) => (
-    <button onClick={onClick} disabled={disabled} style={{ width: 22, height: 22, background: disabled ? "transparent" : "#111120", border: `1px solid ${disabled ? "#161622" : "#232336"}`, borderRadius: 4, cursor: disabled ? "default" : "pointer", color: disabled ? "#1a1a28" : "#555", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit", transition: "all .1s", flexShrink: 0 }}
-      onMouseEnter={e => { if (!disabled) e.currentTarget.style.color = "#fff"; }} onMouseLeave={e => { if (!disabled) e.currentTarget.style.color = "#555"; }}>
-      {label}
+interface ZoomBarProps {
+  zoom: number;
+  onZoom: (zoom: number) => void;
+  onReset: () => void;
+  snapEnabled: boolean;
+  snapSize: number;
+  onToggleSnap?: () => void;
+}
+
+function ZoomBar({
+  zoom,
+  onZoom,
+  onReset,
+  snapEnabled,
+  snapSize,
+  onToggleSnap,
+}: ZoomBarProps) {
+  const Btn = ({
+    icon,
+    title,
+    onClick,
+    active = false,
+    disabled = false,
+  }: {
+    icon?: React.ReactNode;
+    title?: string;
+    onClick?: () => void;
+    active?: boolean;
+    disabled?: boolean;
+  }) => (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        width: 22,
+        height: 22,
+        background: active ? "#1f2f4f" : (disabled ? "transparent" : "#111120"),
+        border: `1px solid ${active ? "#3c6db6" : (disabled ? "#161622" : "#232336")}`,
+        borderRadius: 4,
+        cursor: disabled ? "default" : "pointer",
+        color: active ? "#78c8ff" : (disabled ? "#1a1a28" : "#78839b"),
+        padding: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "inherit",
+        transition: "all .1s",
+        flexShrink: 0,
+      }}
+      onMouseEnter={e => { if (!disabled && !active) e.currentTarget.style.color = "#dce7ff"; }}
+      onMouseLeave={e => { if (!disabled && !active) e.currentTarget.style.color = "#78839b"; }}
+    >
+      {icon}
     </button>
   );
   return (
-    <div style={{ position: "absolute", top: 10, right: 12, display: "flex", alignItems: "center", gap: 3, background: "#0c0c1af0", backdropFilter: "blur(10px)", border: "1px solid #181826", borderRadius: 6, padding: "4px 5px", boxShadow: "0 2px 10px #00000055" }}>
-      <Btn label="−" disabled={zoom <= ZOOM_MIN} onClick={() => onZoom(Math.round((zoom - ZOOM_STEP) * 100) / 100)} />
+    <div
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      style={{ position: "absolute", top: 10, right: 12, display: "flex", alignItems: "center", gap: 4, background: "#0c0f1bf2", backdropFilter: "blur(10px)", border: "1px solid #1b2538", borderRadius: 7, padding: "4px 6px", boxShadow: "0 2px 10px #00000055" }}
+    >
+      <Btn
+        icon={<Minus size={13} />}
+        title="Zoom out"
+        disabled={zoom <= ZOOM_MIN}
+        onClick={() => onZoom(Math.round((zoom - ZOOM_STEP) * 100) / 100)}
+      />
       <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", color: "#30304a", fontSize: 9, fontFamily: "inherit", letterSpacing: .8, padding: "2px 6px", minWidth: 42, textAlign: "center", transition: "color .1s" }}
         onMouseEnter={e => e.currentTarget.style.color = "#aaa"} onMouseLeave={e => e.currentTarget.style.color = "#30304a"}>
         {Math.round(zoom * 100)}%
       </button>
-      <Btn label="+" disabled={zoom >= ZOOM_MAX} onClick={() => onZoom(Math.round((zoom + ZOOM_STEP) * 100) / 100)} />
+      <Btn
+        icon={<Plus size={13} />}
+        title="Zoom in"
+        disabled={zoom >= ZOOM_MAX}
+        onClick={() => onZoom(Math.round((zoom + ZOOM_STEP) * 100) / 100)}
+      />
+      <div style={{ width: 1, height: 14, background: "#283246", margin: "0 1px" }} />
+      <Btn
+        icon={<Magnet size={12} />}
+        title={snapEnabled ? `Snap on (${snapSize}px)` : "Snap off"}
+        onClick={onToggleSnap}
+        active={snapEnabled}
+      />
     </div>
   );
 }
@@ -103,15 +185,20 @@ interface GraphEditorProps {
   onAddNode: (type: string, x?: number, y?: number) => void;
   onDelNode: (id: string) => void;
   onSelectionChange?: (id: string | null) => void;
+  onSelectionSetChange?: (ids: string[]) => void;
   onNodeOpen?: (id: string) => void;
   onCanvasInteractionStart?: () => void;
   onCanvasInteractionEnd?: () => void;
   onCanvasClick?: () => void;
   onRequestContextMenu?: (req: GraphContextMenuRequest) => void;
+  onVisibleNodeIdsChange?: (ids: string[]) => void;
   nodePreviews?: Record<string, string>;
   nodeTimings?: Record<string, number>;
   viewCommandNonce?: number;
   viewCommandType?: 'reset' | 'frame_all' | null;
+  onToggleSnap?: () => void;
+  snapEnabled?: boolean;
+  snapSize?: number;
 }
 
 export function GraphEditor({
@@ -128,15 +215,20 @@ export function GraphEditor({
   onAddNode,
   onDelNode,
   onSelectionChange,
+  onSelectionSetChange,
   onNodeOpen,
   onCanvasInteractionStart,
   onCanvasInteractionEnd,
   onCanvasClick,
   onRequestContextMenu,
+  onVisibleNodeIdsChange,
   nodePreviews,
   nodeTimings,
   viewCommandNonce,
-  viewCommandType
+  viewCommandType,
+  onToggleSnap,
+  snapEnabled = true,
+  snapSize = DEFAULT_GRID_SIZE,
 }: GraphEditorProps) {
   const [pan, setPan] = useState({ x: 60, y: 60 });
   const [zoom, setZoom] = useState(1.0);
@@ -163,8 +255,14 @@ export function GraphEditor({
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
   const [panDrag, setPanDrag] = useState<{ x: number, y: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const visibleIdsRef = useRef<string[]>([]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const interactionActiveRef = useRef(false);
+  const gridSize = Math.max(8, snapSize || DEFAULT_GRID_SIZE);
+  const snapToGrid = useCallback((value: number) => (
+    snapEnabled ? Math.round(value / gridSize) * gridSize : value
+  ), [snapEnabled, gridSize]);
 
   const beginCanvasInteraction = useCallback(() => {
     if (interactionActiveRef.current) return;
@@ -202,6 +300,84 @@ export function GraphEditor({
       return ov ? { ...f, ...ov } : f;
     });
   }, [frames, liveFrameRects]);
+
+  const nodeById = useMemo(() => {
+    const map = new Map<string, NodeData>();
+    for (const node of effectiveNodes) map.set(node.id, node);
+    return map;
+  }, [effectiveNodes]);
+
+  const renderBounds = useMemo<Bounds | null>(() => {
+    if (viewportSize.width <= 0 || viewportSize.height <= 0 || zoom <= 0) return null;
+    const pad = Math.max(RENDER_VISIBILITY_PADDING_PX / zoom, 12);
+    return {
+      minX: (-pan.x) / zoom - pad,
+      minY: (-pan.y) / zoom - pad,
+      maxX: (viewportSize.width - pan.x) / zoom + pad,
+      maxY: (viewportSize.height - pan.y) / zoom + pad,
+    };
+  }, [pan.x, pan.y, viewportSize.height, viewportSize.width, zoom]);
+
+  const isNodeInBounds = useCallback((node: NodeData, bounds: Bounds): boolean => {
+    const nx0 = node.x;
+    const ny0 = node.y;
+    const nx1 = node.x + NW;
+    const ny1 = node.y + nodeHeight(node.type);
+    return nx1 >= bounds.minX && nx0 <= bounds.maxX && ny1 >= bounds.minY && ny0 <= bounds.maxY;
+  }, []);
+
+  const renderedNodes = useMemo(() => {
+    if (!renderBounds) return effectiveNodes;
+    return effectiveNodes.filter((node) => isNodeInBounds(node, renderBounds));
+  }, [effectiveNodes, isNodeInBounds, renderBounds]);
+
+  const renderedNodeSet = useMemo(() => new Set(renderedNodes.map((n) => n.id)), [renderedNodes]);
+
+  const renderedEdges = useMemo(() => (
+    edges.filter((edge) => renderedNodeSet.has(edge.fromId) || renderedNodeSet.has(edge.toId))
+  ), [edges, renderedNodeSet]);
+
+  useEffect(() => {
+    const host = ref.current;
+    if (!host) return;
+    const update = () => {
+      const b = host.getBoundingClientRect();
+      setViewportSize((prev) => (
+        prev.width === b.width && prev.height === b.height
+          ? prev
+          : { width: b.width, height: b.height }
+      ));
+    };
+    update();
+    if (typeof ResizeObserver !== 'undefined') {
+      const obs = new ResizeObserver(() => update());
+      obs.observe(host);
+      return () => obs.disconnect();
+    }
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  useEffect(() => {
+    if (!onVisibleNodeIdsChange) return;
+    if (!renderBounds) {
+      if (visibleIdsRef.current.length > 0) {
+        visibleIdsRef.current = [];
+        onVisibleNodeIdsChange([]);
+      }
+      return;
+    }
+    const nextVisibleIds = renderedNodes.map((node) => node.id);
+    const prevIds = visibleIdsRef.current;
+    const unchanged = prevIds.length === nextVisibleIds.length && prevIds.every((id, idx) => id === nextVisibleIds[idx]);
+    if (unchanged) return;
+    visibleIdsRef.current = nextVisibleIds;
+    onVisibleNodeIdsChange(nextVisibleIds);
+  }, [onVisibleNodeIdsChange, renderBounds, renderedNodes]);
+
+  useEffect(() => () => {
+    if (onVisibleNodeIdsChange) onVisibleNodeIdsChange([]);
+  }, [onVisibleNodeIdsChange]);
 
   useEffect(() => {
     if (!viewCommandType) return;
@@ -252,6 +428,10 @@ export function GraphEditor({
   useEffect(() => {
     if (onSelectionChange) onSelectionChange(sel);
   }, [sel, onSelectionChange]);
+
+  useEffect(() => {
+    onSelectionSetChange?.(selectedIds);
+  }, [selectedIds, onSelectionSetChange]);
 
   useEffect(() => {
     const ids = new Set(nodes.map((n) => n.id));
@@ -336,7 +516,10 @@ export function GraphEditor({
   const onMM = useCallback((e: React.MouseEvent) => {
     const r = rect(), mx = e.clientX - r.left, my = e.clientY - r.top; setMouse({ x: mx, y: my });
     if (drag) {
-      const pos = { x: (mx - pan.x) / zoom - drag.ox, y: (my - pan.y) / zoom - drag.oy };
+      const pos = {
+        x: snapToGrid((mx - pan.x) / zoom - drag.ox),
+        y: snapToGrid((my - pan.y) / zoom - drag.oy),
+      };
       setLivePositions({ [drag.id]: pos });
     }
     if (multiDrag) {
@@ -345,7 +528,9 @@ export function GraphEditor({
       const dx = gx - multiDrag.startGX;
       const dy = gy - multiDrag.startGY;
       const next: Record<string, { x: number; y: number }> = {};
-      Object.entries(multiDrag.starts).forEach(([id, p]) => { next[id] = { x: p.x + dx, y: p.y + dy }; });
+      Object.entries(multiDrag.starts).forEach(([id, p]) => {
+        next[id] = { x: snapToGrid(p.x + dx), y: snapToGrid(p.y + dy) };
+      });
       setLivePositions(next);
     }
       if (frameDrag) {
@@ -353,15 +538,15 @@ export function GraphEditor({
         if (frame) {
           const gx = (mx - pan.x) / zoom;
           const gy = (my - pan.y) / zoom;
-          const x = gx - frameDrag.ox;
-          const y = gy - frameDrag.oy;
+          const x = snapToGrid(gx - frameDrag.ox);
+          const y = snapToGrid(gy - frameDrag.oy);
           setLiveFrameRects({ [frame.id]: { x, y, width: frame.width, height: frame.height } });
           const dx = x - frameDrag.frameStartX;
           const dy = y - frameDrag.frameStartY;
           if (Object.keys(frameDrag.starts).length > 0) {
             const next: Record<string, { x: number; y: number }> = {};
             Object.entries(frameDrag.starts).forEach(([id, p]) => {
-              next[id] = { x: p.x + dx, y: p.y + dy };
+              next[id] = { x: snapToGrid(p.x + dx), y: snapToGrid(p.y + dy) };
             });
             setLivePositions(next);
           }
@@ -383,7 +568,7 @@ export function GraphEditor({
     if (conn) {
       let best: typeof snapTarget = null;
       let bestDist = SNAP_RADIUS;
-      for (const n of effectiveNodes) {
+      for (const n of renderedNodes) {
         if (n.id === conn.from) continue;
         const def = NODE_REGISTRY[n.type];
         if (!def) continue;
@@ -401,7 +586,7 @@ export function GraphEditor({
       }
       setSnapTarget(best);
     }
-  }, [drag, multiDrag, frameDrag, frameResize, boxSel, panDrag, pan, zoom, conn, effectiveNodes, frames, typeCompat]);
+  }, [drag, multiDrag, frameDrag, frameResize, boxSel, panDrag, pan, zoom, conn, renderedNodes, frames, typeCompat, snapToGrid]);
 
   const onMU = useCallback(() => {
     const hadCanvasInteraction = !!drag || !!multiDrag || !!frameDrag || !!frameResize;
@@ -456,6 +641,8 @@ export function GraphEditor({
 
   const onMD = useCallback((e: React.MouseEvent) => { 
     if (e.button === 0) {
+      e.preventDefault();
+      beginCanvasInteraction();
       const r = rect();
       const mx = e.clientX - r.left;
       const my = e.clientY - r.top;
@@ -467,10 +654,12 @@ export function GraphEditor({
       // But startDrag is on NodeCard, so if we are here, we clicked background.
       // Wait, context menu is on right click (button 2).
       if (e.button === 1) { // Middle click pan
-         e.preventDefault(); setPanDrag({ x: e.clientX, y: e.clientY }); 
+         e.preventDefault();
+         beginCanvasInteraction();
+         setPanDrag({ x: e.clientX, y: e.clientY }); 
       }
     } 
-  }, []);
+  }, [beginCanvasInteraction]);
 
   const distanceToSegment = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
     const vx = x2 - x1;
@@ -491,7 +680,7 @@ export function GraphEditor({
     const portThreshold = 10 / zoom;
 
     // Ports first
-    for (const n of effectiveNodes) {
+    for (const n of renderedNodes) {
       const def = NODE_REGISTRY[n.type];
       if (!def) continue;
       if (!isOutputNodeType(n.type) && def.outputs?.length) {
@@ -513,8 +702,8 @@ export function GraphEditor({
     }
 
     // Nodes
-    for (let i = effectiveNodes.length - 1; i >= 0; i--) {
-      const n = effectiveNodes[i];
+    for (let i = renderedNodes.length - 1; i >= 0; i--) {
+      const n = renderedNodes[i];
       const w = NW;
       const h = nodeHeight(n.type);
       if (gx >= n.x && gx <= n.x + w && gy >= n.y && gy <= n.y + h) {
@@ -524,9 +713,9 @@ export function GraphEditor({
 
     // Edges (sampled Bezier)
     const edgeThreshold = 9 / zoom;
-    for (const ed of edges) {
-      const fn = effectiveNodes.find((n) => n.id === ed.fromId);
-      const tn = effectiveNodes.find((n) => n.id === ed.toId);
+    for (const ed of renderedEdges) {
+      const fn = nodeById.get(ed.fromId);
+      const tn = nodeById.get(ed.toId);
       const fromDef = fn ? NODE_REGISTRY[fn.type] : null;
       if (!fn || !tn || !fromDef) continue;
       const s = outPos(fn, ed.fromPort, fromDef.outputs?.length ?? 1);
@@ -556,7 +745,7 @@ export function GraphEditor({
     }
 
     return { kind: 'canvas' };
-  }, [edges, effectiveNodes, effectiveFrames, zoom]);
+  }, [renderedNodes, renderedEdges, nodeById, effectiveFrames, zoom]);
 
   const onContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -592,10 +781,16 @@ export function GraphEditor({
     if (!type) return;
     e.preventDefault();
     const pos = toG(e.clientX, e.clientY);
-    onAddNode(type, pos.x, pos.y);
-  }, [toG, onAddNode]);
+    onAddNode(type, snapToGrid(pos.x), snapToGrid(pos.y));
+  }, [toG, onAddNode, snapToGrid]);
+
+  const onNativeDragStart = useCallback((e: React.DragEvent) => {
+    // Prevent accidental browser-native ghost/image drag while moving nodes.
+    e.preventDefault();
+  }, []);
 
   const startDrag = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault();
     e.stopPropagation();
     const n = nodes.find(x => x.id === id); if (!n) return;
     const g = toG(e.clientX, e.clientY);
@@ -615,6 +810,7 @@ export function GraphEditor({
     setDrag({ id, ox: g.x - n.x, oy: g.y - n.y });
   }, [nodes, toG, selectedIds, selectedSet, beginCanvasInteraction]);
   const startFrameDrag = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault();
     e.stopPropagation();
     const frame = effectiveFrames.find((f) => f.id === id);
     if (!frame) return;
@@ -642,6 +838,7 @@ export function GraphEditor({
     }
   }, [effectiveFrames, effectiveNodes, toG, isNodeInFrame, beginCanvasInteraction]);
   const startFrameResize = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault();
     e.stopPropagation();
     const frame = effectiveFrames.find((f) => f.id === id);
     if (!frame) return;
@@ -675,7 +872,7 @@ export function GraphEditor({
   }, [pan, zoom]);
   const pendWire = useMemo(() => {
     if (!conn) return null;
-    const fn = effectiveNodes.find(n => n.id === conn.from);
+    const fn = nodeById.get(conn.from);
     if (!fn) return null;
     const fp = pScreen(fn, true, conn.fromPort ?? 0);
     const endX = snapTarget ? snapTarget.screenX : mouse.x;
@@ -689,25 +886,44 @@ export function GraphEditor({
       else { color = '#ef4444'; opacity = 0.85; }
     }
     return { path, color, opacity };
-  }, [conn, effectiveNodes, mouse, pScreen, snapTarget]);
+  }, [conn, nodeById, mouse, pScreen, snapTarget]);
 
-  const dsp = 26 * zoom, dox = ((pan.x % dsp) + dsp) % dsp, doy = ((pan.y % dsp) + dsp) % dsp;
+  const dsp = gridSize * zoom;
+  const dox = ((pan.x % dsp) + dsp) % dsp;
+  const doy = ((pan.y % dsp) + dsp) % dsp;
+  const majorStep = dsp * 4;
+  const majorOx = ((pan.x % majorStep) + majorStep) % majorStep;
+  const majorOy = ((pan.y % majorStep) + majorStep) % majorStep;
   const selNode = nodes.find(n => n.id === sel);
   const selFrame = frames.find((f) => f.id === selectedFrameId);
+  const useCompactNodeLod = zoom <= COMPACT_NODE_ZOOM;
+  const allowPreviewTextures = zoom >= PREVIEW_TEXTURE_ZOOM;
 
   return (
-    <div ref={ref} style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden", cursor: conn ? "crosshair" : (frameResize ? "nwse-resize" : (frameDrag || panDrag) ? "grabbing" : "default") }}
-      onMouseMove={onMM} onMouseUp={onMU} onMouseDown={onMD} onContextMenu={onContextMenu}
-      onDragOver={onDragOver} onDrop={onDropNode}>
+    <div ref={ref} style={{
+      position: "relative",
+      width: "100%",
+      height: "100%",
+      overflow: "hidden",
+      cursor: conn ? "crosshair" : (frameResize ? "nwse-resize" : (frameDrag || panDrag) ? "grabbing" : "default"),
+      userSelect: (drag || multiDrag || frameDrag || frameResize || boxSel || panDrag) ? "none" : "auto",
+      WebkitUserSelect: (drag || multiDrag || frameDrag || frameResize || boxSel || panDrag) ? "none" : "auto",
+    }}
+      onMouseMove={onMM} onMouseUp={onMU} onMouseLeave={onMU} onMouseDown={onMD} onContextMenu={onContextMenu}
+      onDragStart={onNativeDragStart} onDragOver={onDragOver} onDrop={onDropNode}>
       <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
         <defs>
-          <pattern id="dg" width={dsp} height={dsp} patternUnits="userSpaceOnUse" patternTransform={`translate(${dox} ${doy})`}>
-            <circle cx="0" cy="0" r={clamp(.65 * zoom, .3, 1.1)} fill="#ffffff09" />
+          <pattern id="dg-minor" width={dsp} height={dsp} patternUnits="userSpaceOnUse" patternTransform={`translate(${dox} ${doy})`}>
+            <path d={`M ${dsp} 0 L 0 0 0 ${dsp}`} fill="none" stroke="#2d3750" strokeWidth={1} />
+          </pattern>
+          <pattern id="dg-major" width={majorStep} height={majorStep} patternUnits="userSpaceOnUse" patternTransform={`translate(${majorOx} ${majorOy})`}>
+            <path d={`M ${majorStep} 0 L 0 0 0 ${majorStep}`} fill="none" stroke="#43527a" strokeWidth={1.15} />
           </pattern>
         </defs>
-        <rect width="100%" height="100%" fill="url(#dg)" />
-        <line x1={pan.x} y1={0} x2={pan.x} y2="100%" stroke="#ffffff05" strokeWidth="1" />
-        <line x1={0} y1={pan.y} x2="100%" y2={pan.y} stroke="#ffffff05" strokeWidth="1" />
+        <rect width="100%" height="100%" fill="url(#dg-minor)" />
+        <rect width="100%" height="100%" fill="url(#dg-major)" />
+        <line x1={pan.x} y1={0} x2={pan.x} y2="100%" stroke="#5a6b97" strokeWidth="1.15" />
+        <line x1={0} y1={pan.y} x2="100%" y2={pan.y} stroke="#5a6b97" strokeWidth="1.15" />
       </svg>
       <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} onClick={() => {
         if (suppressCanvasClickRef.current) { suppressCanvasClickRef.current = false; return; }
@@ -715,8 +931,8 @@ export function GraphEditor({
       }}>
         <rect width="100%" height="100%" fill="transparent" />
         <defs>
-        {edges.map(ed => {
-          const fn = effectiveNodes.find(n => n.id === ed.fromId), tn = effectiveNodes.find(n => n.id === ed.toId);
+        {renderedEdges.map(ed => {
+          const fn = nodeById.get(ed.fromId), tn = nodeById.get(ed.toId);
           if (!fn || !tn) return null;
           const fromDef = NODE_REGISTRY[fn.type];
           const toDef = NODE_REGISTRY[tn.type];
@@ -735,8 +951,8 @@ export function GraphEditor({
           );
         })}
         </defs>
-        {edges.map(ed => {
-          const fn = effectiveNodes.find(n => n.id === ed.fromId), tn = effectiveNodes.find(n => n.id === ed.toId); if (!fn || !tn) return null;
+        {renderedEdges.map(ed => {
+          const fn = nodeById.get(ed.fromId), tn = nodeById.get(ed.toId); if (!fn || !tn) return null;
           const fromDef = NODE_REGISTRY[fn.type];
           const toDef = NODE_REGISTRY[tn.type];
           const outType = (fromDef?.outputs[ed.fromPort]?.type as DataType) ?? 'float';
@@ -844,20 +1060,47 @@ export function GraphEditor({
             </div>
           );
         })}
-        {effectiveNodes.map(n => (
-          <NodeCard key={n.id} node={n} edges={edges} allNodes={nodes} isSel={selectedSet.has(n.id)} isConn={!!conn} connFrom={conn?.from ?? null}
-            connFromPort={conn?.fromPort}
-            connFromType={conn?.fromType}
-            snapTarget={conn && snapTarget?.nodeId === n.id ? snapTarget : null}
-            previewUrl={nodePreviews?.[n.id]}
-            compileMs={nodeTimings?.[n.id]}
-            onDrag={startDrag} onOut={onOut} onIn={onIn} onUpdate={onUpdateParam} onDelete={onDelNode} onSelect={onSelectNode} onOpen={onOpenNode} />
-        ))}
+        {renderedNodes.map((n) => {
+          const isSelected = selectedSet.has(n.id);
+          const lodMode: 'full' | 'compact' = useCompactNodeLod && !isSelected && !conn ? 'compact' : 'full';
+          return (
+            <NodeCard
+              key={n.id}
+              node={n}
+              edges={edges}
+              allNodes={nodes}
+              isSel={isSelected}
+              isConn={!!conn}
+              connFrom={conn?.from ?? null}
+              connFromPort={conn?.fromPort}
+              connFromType={conn?.fromType}
+              snapTarget={conn && snapTarget?.nodeId === n.id ? snapTarget : null}
+              previewUrl={lodMode === 'full' && allowPreviewTextures ? nodePreviews?.[n.id] : undefined}
+              compileMs={nodeTimings?.[n.id]}
+              lodMode={lodMode}
+              onDrag={startDrag}
+              onOut={onOut}
+              onIn={onIn}
+              onUpdate={onUpdateParam}
+              onDelete={onDelNode}
+              onSelect={onSelectNode}
+              onOpen={onOpenNode}
+            />
+          );
+        })}
       </div>
       
-      <ZoomBar zoom={zoom} onZoom={zoomTo} onReset={() => { setPan({ x: 60, y: 60 }); setZoom(1); }} />
+      <ZoomBar
+        zoom={zoom}
+        onZoom={zoomTo}
+        onReset={() => { setPan({ x: 60, y: 60 }); setZoom(1); }}
+        snapEnabled={snapEnabled}
+        snapSize={gridSize}
+        onToggleSnap={onToggleSnap}
+      />
       <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 22, display: "flex", alignItems: "center", padding: "0 12px", gap: 14, fontSize: 8, color: "#1c1c2e", letterSpacing: .7, pointerEvents: "none", borderTop: "1px solid #0e0e1c" }}>
         <span>SCROLL zoom</span><span>MMB pan</span><span>RMB menu</span><span>DBLCLICK node open/pin</span><span>DRAG frame header</span><span>DEL delete selected</span><span>ESC cancel</span>
+        <span style={{ color: snapEnabled ? "#2f9e7f" : "#7d879e" }}>SNAP {snapEnabled ? `${gridSize}px` : 'OFF'}</span>
         {conn && !snapTarget && <span style={{ color: "#94a3b8", marginLeft: 4 }}>● CONNECTING — drag to input port</span>}
         {conn && snapTarget && snapTarget.compat === 'exact' && <span style={{ color: "#22c55e", marginLeft: 4 }}>● SNAP — release to connect</span>}
         {conn && snapTarget && snapTarget.compat === 'cast' && <span style={{ color: "#eab308", marginLeft: 4 }}>● SNAP (implicit cast) — release to connect</span>}

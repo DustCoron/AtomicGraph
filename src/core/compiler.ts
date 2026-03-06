@@ -749,6 +749,25 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
       return res.code;
     };
 
+    const inp3 = (i: number, d: string = 'vec3(0.0)', customUv: string = 'uv'): string => {
+      const defaultVal = this.W ? 'vec3f(0.0)' : d;
+      const res = this.getSource(nodeId, i, customUv, defaultVal, 'vec3');
+      this.mergeExprAtoms(localAtoms, res);
+      if (res.type === 'float') {
+        this.warnings.add(`Implicit cast at node ${node.type}: float -> vec3 (${nodeId}, input ${i})`);
+        return this.v3(`${res.code}, ${res.code}, ${res.code}`);
+      }
+      if (res.type === 'vec2') {
+        this.warnings.add(`Implicit cast at node ${node.type}: vec2 -> vec3 (${nodeId}, input ${i})`);
+        return this.v3(`${res.code}.x, ${res.code}.y, 0.0`);
+      }
+      if (res.type === 'vec4') {
+        this.warnings.add(`Implicit cast at node ${node.type}: vec4 -> vec3 (${nodeId}, input ${i})`);
+        return `(${res.code}).xyz`;
+      }
+      return res.code;
+    };
+
     const inp4 = (i: number, d: string = 'vec4(0.0)', customUv: string = 'uv'): string => {
       const defaultVal = this.W ? 'vec4f(0.0)' : d;
       const res = this.getSource(nodeId, i, customUv, defaultVal);
@@ -1161,6 +1180,19 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         body = `return clamp(${lo} * ${hi} * ${contrast}, 0.0, 1.0);`;
         break;
       }
+      case 'histogram_range': {
+        const inMin = uni('inMin', p.inMin ?? 0.15);
+        const inMax = uni('inMax', p.inMax ?? 0.85);
+        const outMin = uni('outMin', p.outMin ?? 0.0);
+        const outMax = uni('outMax', p.outMax ?? 1.0);
+        const x = inp(0);
+        if (this.W) {
+          body = `{ let t = clamp((${x} - ${inMin}) / max(${inMax} - ${inMin}, 0.0001), 0.0, 1.0); return mix(${outMin}, ${outMax}, t); }`;
+        } else {
+          body = `float t = clamp((${x} - ${inMin}) / max(${inMax} - ${inMin}, 0.0001), 0.0, 1.0); return mix(${outMin}, ${outMax}, t);`;
+        }
+        break;
+      }
       case 'curve': {
         const lift = uni('lift', p.lift ?? 0.0);
         const gamma = uni('gamma', p.gamma ?? 1.0);
@@ -1169,11 +1201,55 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         body = `return clamp(pow(clamp(${x} + ${lift}, 0.0, 1.0), 1.0 / max(${gamma}, 0.001)) * ${gain}, 0.0, 1.0);`;
         break;
       }
+      case 'transform_2d': {
+        const offX = uni('offX', p.offsetX ?? 0.0);
+        const offY = uni('offY', p.offsetY ?? 0.0);
+        const rot = `(${uni('rot', p.rotation ?? 0.0)} * 0.017453292519943295)`;
+        const scale = uni('sc', p.scale ?? 1.0);
+        const tile = uni('tile', (p.tile ?? true) ? 1.0 : 0.0);
+        const centeredUv = `((uv - 0.5) / max(${scale}, 0.0001))`;
+        const rotUv = this.v2(
+          `cos(${rot}) * ${centeredUv}.x - sin(${rot}) * ${centeredUv}.y, sin(${rot}) * ${centeredUv}.x + cos(${rot}) * ${centeredUv}.y`
+        );
+        const sampleUv = `(${rotUv} + 0.5 + ${this.v2(`${offX}, ${offY}`)})`;
+        const clampedUv = `clamp(${sampleUv}, ${this.v2('0.0, 0.0')}, ${this.v2('1.0, 1.0')})`;
+        const finalUv = this.sel(`${tile} > 0.5`, `fract(${sampleUv})`, clampedUv);
+        body = `return ${inp(0, '0.0', finalUv)};`;
+        break;
+      }
+      case 'safe_transform': {
+        const offX = uni('offX', p.offsetX ?? 0.0);
+        const offY = uni('offY', p.offsetY ?? 0.0);
+        const scale = uni('sc', p.scale ?? 1.0);
+        const tile = uni('tile', (p.tile ?? false) ? 1.0 : 0.0);
+        const res = this.sysRef2('u_resolution');
+        const pad = `(0.5 / max(min(${res}.x, ${res}.y), 1.0))`;
+        const sampleUv = `((uv - 0.5) / max(${scale}, 0.0001) + 0.5 + ${this.v2(`${offX}, ${offY}`)})`;
+        const safeUv = `clamp(${sampleUv}, ${this.v2(`${pad}, ${pad}`)}, ${this.v2(`1.0 - ${pad}, 1.0 - ${pad}`)})`;
+        const finalUv = this.sel(`${tile} > 0.5`, `fract(${sampleUv})`, safeUv);
+        body = `return ${inp(0, '0.0', finalUv)};`;
+        break;
+      }
       case 'warp': {
         const warpAmount = inp2(1, this.W ? 'vec2f(0.0)' : 'vec2(0.0)');
         const strength = uni('str', p.strength);
         const warpedUv = `(uv + ${warpAmount} * ${strength})`;
         body = `return ${inp(0, '0.0', warpedUv)};`;
+        break;
+      }
+      case 'vector_warp': {
+        const intensity = uni('int', p.intensity ?? 0.15);
+        const centered = uni('ctr', (p.centered ?? true) ? 1.0 : 0.0);
+        const tile = uni('tile', (p.tile ?? true) ? 1.0 : 0.0);
+        const vecWarp = inp2(1, this.W ? 'vec2f(0.5)' : 'vec2(0.5)');
+        const shift = this.sel(`${centered} > 0.5`, `(${vecWarp} - ${this.v2('0.5, 0.5')})`, vecWarp);
+        const warpedUv = `(uv + (${shift}) * ${intensity})`;
+        const finalUv = this.sel(
+          `${tile} > 0.5`,
+          `fract(${warpedUv})`,
+          `clamp(${warpedUv}, ${this.v2('0.0, 0.0')}, ${this.v2('1.0, 1.0')})`
+        );
+        body = `return ${inp(0, '0.0', finalUv)};`;
         break;
       }
       case 'directional_warp': {
@@ -1230,6 +1306,20 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         body = `return 1.0 - smoothstep(${lo}, ${hi}, ${inp(0, '0.5')});`;
         break;
       }
+      case 'highpass_grayscale': {
+        const radiusPx = uni('radius', p.radius ?? 1.0);
+        const intensity = uni('intensity', p.intensity ?? 1.0);
+        const res = this.sysRef2('u_resolution');
+        const r = `(max(${radiusPx}, 0.0001) / max(${res}.x, ${res}.y))`;
+        const c = inp(0, '0.0');
+        const x1 = inp(0, '0.0', `(uv + ${this.v2(`${r}, 0.0`)})`);
+        const x2 = inp(0, '0.0', `(uv - ${this.v2(`${r}, 0.0`)})`);
+        const y1 = inp(0, '0.0', `(uv + ${this.v2(`0.0, ${r}`)})`);
+        const y2 = inp(0, '0.0', `(uv - ${this.v2(`0.0, ${r}`)})`);
+        const low = `((${c} + ${x1} + ${x2} + ${y1} + ${y2}) * 0.2)`;
+        body = `return clamp(((${c} - ${low}) * ${intensity}) + 0.5, 0.0, 1.0);`;
+        break;
+      }
       case 'slope_blur': {
         const intensity = uni('intensity', p.intensity ?? 2.0);
         const samples = uni('samples', p.samples ?? 4.0);
@@ -1255,6 +1345,42 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         body = `return clamp(${sum} / max(${norm}, 1.0), 0.0, 1.0);`;
         break;
       }
+      case 'non_uniform_blur': {
+        const radius = uni('radius', p.radius ?? 2.0);
+        const samples = uni('samples', p.samples ?? 4.0);
+        const res = this.sysRef2('u_resolution');
+        const blurMask = inp(1, '1.0');
+        const r = `(max(${radius}, 0.0) * clamp(${blurMask}, 0.0, 1.0) / max(${res}.x, ${res}.y))`;
+        const e1 = `step(0.5, ${samples})`;
+        const e2 = `step(1.5, ${samples})`;
+        const e3 = `step(2.5, ${samples})`;
+        const e4 = `step(3.5, ${samples})`;
+        const c0 = inp(0, '0.0');
+        const x1p = inp(0, '0.0', `(uv + ${this.v2(`${r}, 0.0`)})`);
+        const x1n = inp(0, '0.0', `(uv - ${this.v2(`${r}, 0.0`)})`);
+        const y1p = inp(0, '0.0', `(uv + ${this.v2(`0.0, ${r}`)})`);
+        const y1n = inp(0, '0.0', `(uv - ${this.v2(`0.0, ${r}`)})`);
+        const x2p = inp(0, '0.0', `(uv + ${this.v2(`2.0 * ${r}, 0.0`)})`);
+        const x2n = inp(0, '0.0', `(uv - ${this.v2(`2.0 * ${r}, 0.0`)})`);
+        const y2p = inp(0, '0.0', `(uv + ${this.v2(`0.0, 2.0 * ${r}`)})`);
+        const y2n = inp(0, '0.0', `(uv - ${this.v2(`0.0, 2.0 * ${r}`)})`);
+        const x3p = inp(0, '0.0', `(uv + ${this.v2(`3.0 * ${r}, 0.0`)})`);
+        const x3n = inp(0, '0.0', `(uv - ${this.v2(`3.0 * ${r}, 0.0`)})`);
+        const y3p = inp(0, '0.0', `(uv + ${this.v2(`0.0, 3.0 * ${r}`)})`);
+        const y3n = inp(0, '0.0', `(uv - ${this.v2(`0.0, 3.0 * ${r}`)})`);
+        const x4p = inp(0, '0.0', `(uv + ${this.v2(`4.0 * ${r}, 0.0`)})`);
+        const x4n = inp(0, '0.0', `(uv - ${this.v2(`4.0 * ${r}, 0.0`)})`);
+        const y4p = inp(0, '0.0', `(uv + ${this.v2(`0.0, 4.0 * ${r}`)})`);
+        const y4n = inp(0, '0.0', `(uv - ${this.v2(`0.0, 4.0 * ${r}`)})`);
+        const sum = `(${c0}
+          + ${e1} * (${x1p} + ${x1n} + ${y1p} + ${y1n})
+          + ${e2} * (${x2p} + ${x2n} + ${y2p} + ${y2n})
+          + ${e3} * (${x3p} + ${x3n} + ${y3p} + ${y3n})
+          + ${e4} * (${x4p} + ${x4n} + ${y4p} + ${y4n}))`;
+        const norm = `(1.0 + 4.0 * (${e1} + ${e2} + ${e3} + ${e4}))`;
+        body = `return clamp(${sum} / max(${norm}, 1.0), 0.0, 1.0);`;
+        break;
+      }
       case 'flood_fill': {
         const scale = uni('scale', p.scale ?? 8.0);
         const threshold = uni('threshold', p.threshold ?? 0.1);
@@ -1275,7 +1401,9 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
       }
       case 'height_to_normal': {
         const res = this.sysRef2('u_resolution');
-        const r = `(${uni('radius', p.radius ?? 1.0)} / max(${res}.x, ${res}.y))`;
+        const radiusPx = uni('radius', p.radius ?? 1.0);
+        const texel = `(1.0 / max(${res}.x, ${res}.y))`;
+        const r = `(max(${radiusPx}, 0.0001) * ${texel})`;
         const str = uni('strength', p.strength ?? 1.0);
         const fy = uni('flipY', (p.flipY ?? false) ? -1.0 : 1.0);
         if (this.W) {
@@ -1288,9 +1416,9 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
             let bl = ${inp(0, '0.0', `uv + vec2f(-${r},  ${r})`)};
             let  b = ${inp(0, '0.0', `uv + vec2f( 0.0,  ${r})`)};
             let br = ${inp(0, '0.0', `uv + vec2f( ${r},  ${r})`)};
-            let dX = (tr + 2.0*r0 + br) - (tl + 2.0*l + bl);
-            let dY = (bl + 2.0*b + br) - (tl + 2.0*t + tr);
-            let k = ${str} * max(${res}.x, ${res}.y) / max(${r}, 0.0001) * 0.5;
+            let dX = 3.0 * (tr - tl) + 10.0 * (r0 - l) + 3.0 * (br - bl);
+            let dY = 3.0 * (bl - tl) + 10.0 * (b - t) + 3.0 * (br - tr);
+            let k = (${str} / max(${radiusPx}, 0.0001)) * (1.0 / 32.0);
             let gx = -dX * k;
             let gy = -dY * k * ${fy};
             let n = normalize(vec3f(gx, gy, 1.0));
@@ -1306,13 +1434,54 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
             float bl = ${inp(0, '0.0', `uv + vec2(-${r},  ${r})`)};
             float  b = ${inp(0, '0.0', `uv + vec2( 0.0,  ${r})`)};
             float br = ${inp(0, '0.0', `uv + vec2( ${r},  ${r})`)};
-            float dX = (tr + 2.0*r0 + br) - (tl + 2.0*l + bl);
-            float dY = (bl + 2.0*b + br) - (tl + 2.0*t + tr);
-            float k = ${str} * max(${res}.x, ${res}.y) / max(${r}, 0.0001) * 0.5;
+            float dX = 3.0 * (tr - tl) + 10.0 * (r0 - l) + 3.0 * (br - bl);
+            float dY = 3.0 * (bl - tl) + 10.0 * (b - t) + 3.0 * (br - tr);
+            float k = (${str} / max(${radiusPx}, 0.0001)) * (1.0 / 32.0);
             float gx = -dX * k;
             float gy = -dY * k * ${fy};
             vec3 n = normalize(vec3(gx, gy, 1.0));
             return n * 0.5 + 0.5;
+          }`;
+        }
+        break;
+      }
+      case 'normal_combine': {
+        const base = inp3(0, this.W ? 'vec3f(0.5, 0.5, 1.0)' : 'vec3(0.5, 0.5, 1.0)');
+        const detail = inp3(1, this.W ? 'vec3f(0.5, 0.5, 1.0)' : 'vec3(0.5, 0.5, 1.0)');
+        const strength = uni('strength', p.strength ?? 1.0);
+        if (this.W) {
+          body = `{
+            let b = normalize(${base} * 2.0 - 1.0);
+            let d = normalize(${detail} * 2.0 - 1.0);
+            let ds = normalize(vec3f(d.xy * ${strength}, d.z));
+            let n = normalize(vec3f(b.xy + ds.xy, max(1e-4, b.z * ds.z)));
+            return n * 0.5 + 0.5;
+          }`;
+        } else {
+          body = `{
+            vec3 b = normalize(${base} * 2.0 - 1.0);
+            vec3 d = normalize(${detail} * 2.0 - 1.0);
+            vec3 ds = normalize(vec3(d.xy * ${strength}, d.z));
+            vec3 n = normalize(vec3(b.xy + ds.xy, max(1e-4, b.z * ds.z)));
+            return n * 0.5 + 0.5;
+          }`;
+        }
+        break;
+      }
+      case 'normal_normalize': {
+        const src = inp3(0, this.W ? 'vec3f(0.5, 0.5, 1.0)' : 'vec3(0.5, 0.5, 1.0)');
+        const flipY = uni('flipY', (p.flipY ?? false) ? -1.0 : 1.0);
+        if (this.W) {
+          body = `{
+            let n0 = ${src} * 2.0 - 1.0;
+            let n1 = normalize(vec3f(n0.x, n0.y * ${flipY}, n0.z));
+            return n1 * 0.5 + 0.5;
+          }`;
+        } else {
+          body = `{
+            vec3 n0 = ${src} * 2.0 - 1.0;
+            vec3 n1 = normalize(vec3(n0.x, n0.y * ${flipY}, n0.z));
+            return n1 * 0.5 + 0.5;
           }`;
         }
         break;
@@ -1393,6 +1562,7 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
       case 'output_normal': body = `return ${inp(0)};`; break;
       case 'output_roughness': body = `return ${inp(0)};`; break;
       case 'output_height': body = `return ${inp(0)};`; break;
+      case 'output_metallic': body = `return ${inp(0)};`; break;
 
       default: body = `return 0.5;`; break;
     }

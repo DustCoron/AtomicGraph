@@ -140,10 +140,11 @@ export function createEmptyIR(outputX = 600, outputY = 200): GraphIR {
   return {
     schemaVersion: SCHEMA_VERSION,
     nodes: [
-      { id: 'out_base', type: 'output_baseColor', x: outputX, y: outputY - 210, params: {} },
-      { id: 'out_rough', type: 'output_roughness', x: outputX, y: outputY - 70, params: {} },
-      { id: 'out_normal', type: 'output_normal', x: outputX, y: outputY + 70, params: {} },
-      { id: 'out_height', type: 'output_height', x: outputX, y: outputY + 210, params: {} }
+      { id: 'out_base', type: 'output_baseColor', x: outputX, y: outputY - 280, params: {} },
+      { id: 'out_rough', type: 'output_roughness', x: outputX, y: outputY - 140, params: {} },
+      { id: 'out_normal', type: 'output_normal', x: outputX, y: outputY, params: {} },
+      { id: 'out_metal', type: 'output_metallic', x: outputX, y: outputY + 140, params: {} },
+      { id: 'out_height', type: 'output_height', x: outputX, y: outputY + 280, params: {} }
     ],
     edges: [],
     frames: [],

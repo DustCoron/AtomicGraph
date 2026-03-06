@@ -1,6 +1,29 @@
 import { registerOperator } from './registry';
 import { Operator } from './types';
 import { isOutputNodeType } from '../output';
+import { DataType } from '../types';
+import { NODE_REGISTRY } from '../registry';
+
+const getContextNodeId = (ctx: Parameters<NonNullable<Operator['visible']>>[0]): string => (
+  ctx.selection.nodeIds[0] || (ctx.hover.kind === 'node' ? ctx.hover.nodeId : '')
+);
+
+const hasEditableParams = (ctx: Parameters<NonNullable<Operator['visible']>>[0], nodeId: string): boolean => {
+  const node = ctx.graph.nodes.find((n) => n.id === nodeId);
+  if (!node || isOutputNodeType(node.type)) return false;
+  const def = NODE_REGISTRY[node.type];
+  return !!def && Object.keys(def.params).length > 0;
+};
+
+const sourceNodeForPortType = (type?: DataType): string | null => {
+  if (type === 'float') return 'constant';
+  if (type === 'vec3') return 'uniform_color';
+  return null;
+};
+
+const findIncomingEdge = (ctx: Parameters<NonNullable<Operator['visible']>>[0], nodeId: string, portIndex: number) => (
+  ctx.graph.edges.find((edge) => edge.toId === nodeId && edge.toPort === portIndex)
+);
 
 const builtinOperators: Operator[] = [
   {
@@ -64,6 +87,58 @@ const builtinOperators: Operator[] = [
       const id = ctx.selection.nodeIds[0] || (ctx.hover.kind === 'node' ? ctx.hover.nodeId : '');
       if (!id) return;
       ctx.actions.copyNode(id);
+      ctx.actions.closeContextMenu();
+    }
+  },
+  {
+    id: 'node.copy_params',
+    label: 'Copy Parameters',
+    category: 'Node',
+    keywords: ['copy', 'params', 'parameter', 'values'],
+    visible: (ctx) => {
+      const nodeId = getContextNodeId(ctx);
+      return !!nodeId && hasEditableParams(ctx, nodeId);
+    },
+    run: (ctx) => {
+      const nodeId = getContextNodeId(ctx);
+      if (!nodeId) return;
+      ctx.actions.copyNodeParams(nodeId);
+      ctx.actions.closeContextMenu();
+    }
+  },
+  {
+    id: 'node.paste_params',
+    label: 'Paste Parameters',
+    category: 'Node',
+    keywords: ['paste', 'params', 'parameter', 'values'],
+    visible: (ctx) => {
+      const nodeId = getContextNodeId(ctx);
+      return !!nodeId && hasEditableParams(ctx, nodeId);
+    },
+    enabled: (ctx) => {
+      const nodeId = getContextNodeId(ctx);
+      return !!nodeId && ctx.actions.canPasteNodeParams(nodeId);
+    },
+    run: (ctx) => {
+      const nodeId = getContextNodeId(ctx);
+      if (!nodeId) return;
+      ctx.actions.pasteNodeParams(nodeId);
+      ctx.actions.closeContextMenu();
+    }
+  },
+  {
+    id: 'node.reset_params',
+    label: 'Reset Parameters',
+    category: 'Node',
+    keywords: ['reset', 'params', 'defaults', 'parameter'],
+    visible: (ctx) => {
+      const nodeId = getContextNodeId(ctx);
+      return !!nodeId && hasEditableParams(ctx, nodeId);
+    },
+    run: (ctx) => {
+      const nodeId = getContextNodeId(ctx);
+      if (!nodeId) return;
+      ctx.actions.resetNodeParams(nodeId);
       ctx.actions.closeContextMenu();
     }
   },
@@ -165,6 +240,46 @@ const builtinOperators: Operator[] = [
     }
   },
   {
+    id: 'graph.disconnect_input_port',
+    label: 'Disconnect Input',
+    category: 'Link',
+    keywords: ['disconnect', 'unlink', 'input', 'port'],
+    visible: (ctx) => ctx.hover.kind === 'port' && ctx.hover.direction === 'in',
+    enabled: (ctx) => {
+      if (ctx.hover.kind !== 'port' || ctx.hover.direction !== 'in') return false;
+      return !!findIncomingEdge(ctx, ctx.hover.nodeId, ctx.hover.portIndex);
+    },
+    run: (ctx) => {
+      if (ctx.hover.kind !== 'port' || ctx.hover.direction !== 'in') return;
+      const edge = findIncomingEdge(ctx, ctx.hover.nodeId, ctx.hover.portIndex);
+      if (!edge) return;
+      ctx.actions.removeEdge(edge.id);
+      ctx.actions.closeContextMenu();
+    }
+  },
+  {
+    id: 'graph.attach_source_to_port',
+    label: 'Attach Source',
+    category: 'Link',
+    keywords: ['attach', 'source', 'constant', 'uniform', 'port'],
+    visible: (ctx) => {
+      if (ctx.hover.kind !== 'port' || ctx.hover.direction !== 'in') return false;
+      return !!sourceNodeForPortType(ctx.hover.type);
+    },
+    run: (ctx) => {
+      if (ctx.hover.kind !== 'port' || ctx.hover.direction !== 'in') return;
+      const sourceType = sourceNodeForPortType(ctx.hover.type);
+      if (!sourceType) return;
+      ctx.actions.addNodeFromPort(
+        { nodeId: ctx.hover.nodeId, portIndex: ctx.hover.portIndex, direction: 'in' },
+        sourceType,
+        ctx.mouse.graphX - 240,
+        ctx.mouse.graphY - 24
+      );
+      ctx.actions.closeContextMenu();
+    }
+  },
+  {
     id: 'view.frame_all',
     label: 'Frame All',
     category: 'View',
@@ -222,7 +337,7 @@ const builtinOperators: Operator[] = [
     label: 'Toggle Chaos Mode',
     category: 'Debug',
     keywords: ['chaos', 'fuzz', 'stress', 'random', 'crash'],
-    visible: () => true,
+    visible: () => false,
     enabled: (ctx) => !!ctx.actions.toggleChaosMode,
     run: (ctx) => {
       ctx.actions.toggleChaosMode?.();
@@ -234,7 +349,7 @@ const builtinOperators: Operator[] = [
     label: 'Chaos Step Once',
     category: 'Debug',
     keywords: ['chaos', 'fuzz', 'step', 'stress', 'random'],
-    visible: () => true,
+    visible: () => false,
     enabled: (ctx) => !!ctx.actions.stepChaosModeOnce,
     run: (ctx) => {
       ctx.actions.stepChaosModeOnce?.();
