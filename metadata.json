@@ -1,0 +1,5 @@
+{
+  "name": "Procedural Texture Generator",
+  "description": "A web-based procedural texture and noise generator using React Flow and Three.js.",
+  "requestFramePermissions": []
+}

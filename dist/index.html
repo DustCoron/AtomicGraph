@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script type="module" crossorigin src="/assets/index-DRgwYi0v.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DFq2yNCA.css">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      try {
+        // Attempt to make window.fetch writable to prevent "Cannot set property fetch" error
+        // which can happen if a dependency tries to polyfill it in a restricted environment.
+        Object.defineProperty(window, 'fetch', {
+          value: window.fetch,
+          writable: true,
+          configurable: true
+        });
+      } catch (e) {
+        // Ignore errors if we can't change it
+      }
+    </script>
+  </body>
+</html>
+

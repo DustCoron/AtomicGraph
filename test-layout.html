@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Layout Test - Nhance Texture</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', monospace, sans-serif;
+            background: #25272e;
+            color: #dde0ea;
+        }
+        iframe {
+            width: 100%;
+            height: 90vh;
+            border: 2px solid #4a7ecf;
+            margin: 10px;
+        }
+        .info {
+            padding: 20px;
+            background: #2a2d33;
+            margin: 10px;
+            border-radius: 8px;
+        }
+        .check {
+            margin: 5px 0;
+            padding: 5px 10px;
+            background: #1e2028;
+            border-radius: 4px;
+        }
+        .check.ok { color: #4ade80; }
+        .check.error { color: #ef4444; }
+        button {
+            background: #3c414e;
+            border: 1px solid #505668;
+            color: #c9d0e6;
+            padding: 8px 16px;
+            cursor: pointer;
+            border-radius: 4px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #4d5363;
+        }
+    </style>
+</head>
+<body>
+    <div class="info">
+        <h2>Nhance Texture - Layout Verification</h2>
+        <button onclick="runChecks()">Run Layout Checks</button>
+        <button onclick="takeScreenshot()">Take Screenshot (F12 Console)</button>
+        <div id="results"></div>
+    </div>
+
+    <iframe id="app" src="http://localhost:3002/"></iframe>
+
+    <script>
+        function runChecks() {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Running checks...</p>';
+            
+            setTimeout(() => {
+                try {
+                    const iframe = document.getElementById('app');
+                    const doc = iframe.contentDocument || iframe.contentWindow.document;
+                    
+                    const checks = [
+                        { name: 'Menu Bar', selector: '.nt-menu-item', expected: 5 },
+                        { name: 'Toolbar', selector: '.nt-btn', expected: '> 5' },
+                        { name: 'Workspace', selector: '.dk-workspace', expected: 1 },
+                        { name: 'Dock Panels', selector: '.dk-panel', expected: 5 },
+                        { name: 'Dock Headers', selector: '.dk-header', expected: 5 },
+                        { name: 'Tabs', selector: '.dk-tab', expected: 5 },
+                        { name: 'Action Buttons', selector: '.dk-action-btn', expected: '> 10' },
+                        { name: 'Splitters', selector: '.nt-splitter', expected: 4 }
+                    ];
+                    
+                    let html = '<h3>Layout Check Results:</h3>';
+                    
+                    checks.forEach(check => {
+                        const elements = doc.querySelectorAll(check.selector);
+                        const count = elements.length;
+                        const expectedNum = typeof check.expected === 'number' ? check.expected : parseInt(check.expected.replace('> ', ''));
+                        const isOk = typeof check.expected === 'number' ? count === check.expected : count > expectedNum;
+                        
+                        html += `<div class="check ${isOk ? 'ok' : 'error'}">
+                            ${isOk ? '✓' : '✗'} ${check.name}: Found ${count} (expected ${check.expected})
+                        </div>`;
+                    });
+                    
+                    const panelIds = Array.from(doc.querySelectorAll('[data-panel-id]'))
+                        .map(el => el.getAttribute('data-panel-id'));
+                    
+                    html += `<div class="check ok">Panel IDs: ${panelIds.join(', ') || 'None found'}</div>`;
+                    
+                    const errors = [];
+                    doc.querySelectorAll('.dk-empty').forEach(el => {
+                        if (el.offsetParent !== null) {
+                            errors.push('Empty panel visible: ' + el.textContent);
+                        }
+                    });
+                    
+                    if (errors.length > 0) {
+                        html += '<h4>Potential Issues:</h4>';
+                        errors.forEach(err => {
+                            html += `<div class="check error">⚠ ${err}</div>`;
+                        });
+                    }
+                    
+                    results.innerHTML = html;
+                } catch (error) {
+                    results.innerHTML = `<div class="check error">Error: ${error.message}<br>
+                        This might be due to CORS restrictions. Please open http://localhost:3002/ directly in your browser and use F12 console instead.</div>`;
+                }
+            }, 1000);
+        }
+        
+        function takeScreenshot() {
+            console.log('%cTo take a screenshot:', 'font-size: 16px; font-weight: bold;');
+            console.log('1. Open DevTools (F12)');
+            console.log('2. Press Ctrl+Shift+P (Windows) or Cmd+Shift+P (Mac)');
+            console.log('3. Type "screenshot"');
+            console.log('4. Select "Capture full size screenshot" or "Capture screenshot"');
+            alert('Check the console (F12) for screenshot instructions');
+        }
+        
+        window.onload = () => {
+            setTimeout(runChecks, 2000);
+        };
+    </script>
+</body>
+</html>

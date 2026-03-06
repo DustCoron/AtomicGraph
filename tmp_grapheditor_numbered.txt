@@ -1,0 +1,590 @@
+   1: 
+   2: import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+   3: import { DataType, NodeData, EdgeData } from '../core/types';
+   4: import { NODE_REGISTRY, CATEGORIES } from '../core/registry';
+   5: import { isOutputNodeType } from '../core/output';
+   6: import { NodeCard } from './NodeCard';
+   7: 
+   8: const ZOOM_MIN = 0.15, ZOOM_MAX = 2.5, ZOOM_STEP = 0.1;
+   9: const PREVIEW_SIZE = 128;
+  10: const NW = 210, HDR = 36, PREVIEW_H = PREVIEW_SIZE + 12, ROW = 28, PR = 6;
+  11: 
+  12: const catColor = (t: string) => {
+  13:   const cat = NODE_REGISTRY[t]?.category;
+  14:   return (CATEGORIES as any)[cat]?.color ?? "#888";
+  15: };
+  16: 
+  17: const dataTypeColor = (type: DataType): string => {
+  18:   const map: Record<DataType, string> = {
+  19:     float: '#94a3b8',
+  20:     vec2: '#3b82f6',
+  21:     vec3: '#10b981',
+  22:     vec4: '#8b5cf6',
+  23:     Texture2D: '#a78bfa',
+  24:     Field: '#c084fc',
+  25:   };
+  26:   return map[type] ?? '#94a3b8';
+  27: };
+  28: 
+  29: const NUMERIC_TYPES: DataType[] = ['float', 'vec2', 'vec3', 'vec4'];
+  30: 
+  31: const outPos = (n: NodeData, portIndex: number, outputCount: number) => {
+  32:   if (outputCount <= 1) return { x: n.x + NW, y: n.y + HDR / 2 };
+  33:   const def = NODE_REGISTRY[n.type];
+  34:   const rowsBeforeOutputs = (def?.inputs.length ?? 0) + Object.keys(n.params ?? {}).length;
+  35:   const y = n.y + HDR + PREVIEW_H + (rowsBeforeOutputs + portIndex + 0.5) * ROW;
+  36:   return { x: n.x + NW, y };
+  37: };
+  38: const inPos = (n: NodeData, i: number) => ({ x: n.x, y: n.y + HDR + PREVIEW_H + i * ROW + ROW / 2 });
+  39: const bz = (x1: number, y1: number, x2: number, y2: number) => { const d = Math.max(Math.abs(x2 - x1) * .5, 55); return `M${x1} ${y1}C${x1 + d} ${y1} ${x2 - d} ${y2} ${x2} ${y2}`; };
+  40: const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  41: 
+  42: const nodeHeight = (type: string) => {
+  43:   const d = NODE_REGISTRY[type];
+  44:   if (!d) return HDR + ROW + 10;
+  45:   const inputParamRows = d.inputs.length + Object.keys(d.params).length;
+  46:   const outputRows = d.outputs?.length ?? 1;
+  47:   return HDR + PREVIEW_H + Math.max(inputParamRows, outputRows, 1) * ROW + 10;
+  48: };
+  49: 
+  50: export type GraphMenuTarget =
+  51:   | { kind: 'canvas' }
+  52:   | { kind: 'node'; nodeId: string }
+  53:   | { kind: 'edge'; edgeId: string }
+  54:   | { kind: 'port'; nodeId: string; portIndex: number; direction: 'in' | 'out'; type?: DataType };
+  55: 
+  56: export interface GraphContextMenuRequest {
+  57:   clientX: number;
+  58:   clientY: number;
+  59:   graphX: number;
+  60:   graphY: number;
+  61:   target: GraphMenuTarget;
+  62: }
+  63: 
+  64: function ZoomBar({ zoom, onZoom, onReset }: any) {
+  65:   const Btn = ({ label, disabled, onClick }: any) => (
+  66:     <button onClick={onClick} disabled={disabled} style={{ width: 22, height: 22, background: disabled ? "transparent" : "#111120", border: `1px solid ${disabled ? "#161622" : "#232336"}`, borderRadius: 4, cursor: disabled ? "default" : "pointer", color: disabled ? "#1a1a28" : "#555", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "inherit", transition: "all .1s", flexShrink: 0 }}
+  67:       onMouseEnter={e => { if (!disabled) e.currentTarget.style.color = "#fff"; }} onMouseLeave={e => { if (!disabled) e.currentTarget.style.color = "#555"; }}>
+  68:       {label}
+  69:     </button>
+  70:   );
+  71:   return (
+  72:     <div style={{ position: "absolute", top: 10, right: 12, display: "flex", alignItems: "center", gap: 3, background: "#0c0c1af0", backdropFilter: "blur(10px)", border: "1px solid #181826", borderRadius: 6, padding: "4px 5px", boxShadow: "0 2px 10px #00000055" }}>
+  73:       <Btn label="−" disabled={zoom <= ZOOM_MIN} onClick={() => onZoom(Math.round((zoom - ZOOM_STEP) * 100) / 100)} />
+  74:       <button onClick={onReset} style={{ background: "none", border: "none", cursor: "pointer", color: "#30304a", fontSize: 9, fontFamily: "inherit", letterSpacing: .8, padding: "2px 6px", minWidth: 42, textAlign: "center", transition: "color .1s" }}
+  75:         onMouseEnter={e => e.currentTarget.style.color = "#aaa"} onMouseLeave={e => e.currentTarget.style.color = "#30304a"}>
+  76:         {Math.round(zoom * 100)}%
+  77:       </button>
+  78:       <Btn label="+" disabled={zoom >= ZOOM_MAX} onClick={() => onZoom(Math.round((zoom + ZOOM_STEP) * 100) / 100)} />
+  79:     </div>
+  80:   );
+  81: }
+  82: 
+  83: interface GraphEditorProps {
+  84:   nodes: NodeData[];
+  85:   edges: EdgeData[];
+  86:   onMove: (id: string, pos: { x: number, y: number }) => void;
+  87:   onDelEdge: (id: string) => void;
+  88:   onConnect: (from: string, toId: string, toPort: number, fromPort?: number) => void;
+  89:   onUpdateParam: (id: string, k: string, v: any) => void;
+  90:   onAddNode: (type: string, x?: number, y?: number) => void;
+  91:   onDelNode: (id: string) => void;
+  92:   onSelectionChange?: (id: string | null) => void;
+  93:   onNodeOpen?: (id: string) => void;
+  94:   onCanvasClick?: () => void;
+  95:   onRequestContextMenu?: (req: GraphContextMenuRequest) => void;
+  96:   nodePreviews?: Record<string, string>;
+  97:   nodeTimings?: Record<string, number>;
+  98:   viewCommandNonce?: number;
+  99:   viewCommandType?: 'reset' | 'frame_all' | null;
+ 100: }
+ 101: 
+ 102: export function GraphEditor({
+ 103:   nodes,
+ 104:   edges,
+ 105:   onMove,
+ 106:   onDelEdge,
+ 107:   onConnect,
+ 108:   onUpdateParam,
+ 109:   onAddNode,
+ 110:   onDelNode,
+ 111:   onSelectionChange,
+ 112:   onNodeOpen,
+ 113:   onCanvasClick,
+ 114:   onRequestContextMenu,
+ 115:   nodePreviews,
+ 116:   nodeTimings,
+ 117:   viewCommandNonce,
+ 118:   viewCommandType
+ 119: }: GraphEditorProps) {
+ 120:   const [pan, setPan] = useState({ x: 60, y: 60 });
+ 121:   const [zoom, setZoom] = useState(1.0);
+ 122:   const [drag, setDrag] = useState<{ id: string, ox: number, oy: number } | null>(null);
+ 123:   const [multiDrag, setMultiDrag] = useState<{ startGX: number, startGY: number, starts: Record<string, { x: number, y: number }> } | null>(null);
+ 124:   const [livePositions, setLivePositions] = useState<Record<string, { x: number; y: number }> | null>(null);
+ 125:   const [boxSel, setBoxSel] = useState<{ x0: number, y0: number, x1: number, y1: number, append: boolean } | null>(null);
+ 126:   const suppressCanvasClickRef = useRef(false);
+ 127:   const [conn, setConn] = useState<{ from: string; fromPort?: number; fromType?: DataType } | null>(null);
+ 128:   const [snapTarget, setSnapTarget] = useState<{ nodeId: string; portIndex: number; screenX: number; screenY: number; compat: 'exact' | 'cast' | 'invalid' } | null>(null);
+ 129:   const [sel, setSel] = useState<string | null>(null);
+ 130:   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+ 131:   const [mouse, setMouse] = useState({ x: 0, y: 0 });
+ 132:   const [panDrag, setPanDrag] = useState<{ x: number, y: number } | null>(null);
+ 133:   const ref = useRef<HTMLDivElement>(null);
+ 134:   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+ 135: 
+ 136:   const rect = () => ref.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+ 137:   const toG = useCallback((sx: number, sy: number) => { const r = rect(); return { x: (sx - r.left - pan.x) / zoom, y: (sy - r.top - pan.y) / zoom }; }, [pan, zoom]);
+ 138: 
+ 139:   const effectiveNodes = useMemo(() => {
+ 140:     if (!livePositions) return nodes;
+ 141:     return nodes.map(n => {
+ 142:       const ov = livePositions[n.id];
+ 143:       return ov ? { ...n, x: ov.x, y: ov.y } : n;
+ 144:     });
+ 145:   }, [nodes, livePositions]);
+ 146: 
+ 147:   useEffect(() => {
+ 148:     if (!viewCommandType) return;
+ 149:     if (viewCommandType === 'reset' || viewCommandType === 'frame_all') {
+ 150:       setPan({ x: 60, y: 60 });
+ 151:       setZoom(1);
+ 152:     }
+ 153:   }, [viewCommandNonce, viewCommandType]);
+ 154: 
+ 155:   useEffect(() => {
+ 156:     if (onSelectionChange) onSelectionChange(sel);
+ 157:   }, [sel, onSelectionChange]);
+ 158: 
+ 159:   useEffect(() => {
+ 160:     const ids = new Set(nodes.map((n) => n.id));
+ 161:     setSelectedIds((prev) => prev.filter((id) => ids.has(id)));
+ 162:     setSel((prev) => (prev && ids.has(prev) ? prev : null));
+ 163:   }, [nodes]);
+ 164: 
+ 165:   useEffect(() => {
+ 166:     const el = ref.current; if (!el) return;
+ 167:     const onWheel = (e: WheelEvent) => {
+ 168:       e.preventDefault();
+ 169:       const r = el.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+ 170:       const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
+ 171:       setZoom(z => { const nz = Math.round(clamp(z + delta, ZOOM_MIN, ZOOM_MAX) * 100) / 100; setPan(p => ({ x: mx - (mx - p.x) * (nz / z), y: my - (my - p.y) * (nz / z) })); return nz; });
+ 172:     };
+ 173:     el.addEventListener("wheel", onWheel, { passive: false });
+ 174:     return () => el.removeEventListener("wheel", onWheel);
+ 175:   }, []);
+ 176: 
+ 177:   const zoomTo = useCallback((nz: number) => { const el = ref.current; if (!el) return; const { width, height } = el.getBoundingClientRect(), cx = width / 2, cy = height / 2; setZoom(z => { const n = clamp(nz, ZOOM_MIN, ZOOM_MAX); setPan(p => ({ x: cx - (cx - p.x) * (n / z), y: cy - (cy - p.y) * (n / z) })); return n; }); }, []);
+ 178: 
+ 179:   useEffect(() => {
+ 180:     const h = (e: KeyboardEvent) => {
+ 181:       if (e.key === "Escape") { setConn(null); setSnapTarget(null); return; }
+ 182:       const active = document.activeElement as HTMLElement | null;
+ 183:       const activeTag = active?.tagName;
+ 184:       const editing = !!active && (active.isContentEditable || !!active.closest('[contenteditable="true"]') || activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT');
+ 185:       if ((e.key === "Delete" || e.key === "Backspace") && !editing) {
+ 186:         if (selectedIds.length > 0) {
+ 187:           selectedIds.forEach((id) => {
+ 188:             const nd = nodes.find(n => n.id === id);
+ 189:             if (nd && !isOutputNodeType(nd.type)) onDelNode(id);
+ 190:           });
+ 191:           setSelectedIds([]);
+ 192:           setSel(null);
+ 193:           return;
+ 194:         }
+ 195:         if (!sel) return; const nd = nodes.find(n => n.id === sel); if (!nd || isOutputNodeType(nd.type)) return;
+ 196:         onDelNode(sel); setSel(null); setSelectedIds([]);
+ 197:       }
+ 198:     };
+ 199:     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+ 200:   }, [sel, selectedIds, nodes, onDelNode]);
+ 201: 
+ 202:   const SNAP_RADIUS = 35;
+ 203: 
+ 204:   const typeCompat = useCallback((fromType?: DataType, toType?: DataType): 'exact' | 'cast' | 'invalid' => {
+ 205:     if (!fromType || !toType) return 'exact';
+ 206:     if (fromType === toType) return 'exact';
+ 207:     const numerics = new Set<DataType>(['float', 'vec2', 'vec3', 'vec4']);
+ 208:     if (numerics.has(fromType) && numerics.has(toType)) return 'cast';
+ 209:     return 'invalid';
+ 210:   }, []);
+ 211: 
+ 212:   const onMM = useCallback((e: React.MouseEvent) => {
+ 213:     const r = rect(), mx = e.clientX - r.left, my = e.clientY - r.top; setMouse({ x: mx, y: my });
+ 214:     if (drag) {
+ 215:       const pos = { x: (mx - pan.x) / zoom - drag.ox, y: (my - pan.y) / zoom - drag.oy };
+ 216:       setLivePositions({ [drag.id]: pos });
+ 217:     }
+ 218:     if (multiDrag) {
+ 219:       const gx = (mx - pan.x) / zoom;
+ 220:       const gy = (my - pan.y) / zoom;
+ 221:       const dx = gx - multiDrag.startGX;
+ 222:       const dy = gy - multiDrag.startGY;
+ 223:       const next: Record<string, { x: number; y: number }> = {};
+ 224:       Object.entries(multiDrag.starts).forEach(([id, p]) => { next[id] = { x: p.x + dx, y: p.y + dy }; });
+ 225:       setLivePositions(next);
+ 226:     }
+ 227:     if (boxSel) setBoxSel((prev) => prev ? { ...prev, x1: mx, y1: my } : prev);
+ 228:     if (panDrag) { setPan(p => ({ x: p.x + e.clientX - panDrag.x, y: p.y + e.clientY - panDrag.y })); setPanDrag({ x: e.clientX, y: e.clientY }); }
+ 229: 
+ 230:     if (conn) {
+ 231:       let best: typeof snapTarget = null;
+ 232:       let bestDist = SNAP_RADIUS;
+ 233:       for (const n of effectiveNodes) {
+ 234:         if (n.id === conn.from) continue;
+ 235:         const def = NODE_REGISTRY[n.type];
+ 236:         if (!def) continue;
+ 237:         for (let i = 0; i < def.inputs.length; i++) {
+ 238:           const ip = inPos(n, i);
+ 239:           const sx = ip.x * zoom + pan.x;
+ 240:           const sy = ip.y * zoom + pan.y;
+ 241:           const d = Math.hypot(mx - sx, my - sy);
+ 242:           if (d < bestDist) {
+ 243:             bestDist = d;
+ 244:             const compat = typeCompat(conn.fromType, def.inputs[i].type as DataType);
+ 245:             best = { nodeId: n.id, portIndex: i, screenX: sx, screenY: sy, compat };
+ 246:           }
+ 247:         }
+ 248:       }
+ 249:       setSnapTarget(best);
+ 250:     }
+ 251:   }, [drag, multiDrag, boxSel, panDrag, pan, zoom, conn, effectiveNodes, typeCompat]);
+ 252: 
+ 253:   const onMU = useCallback(() => {
+ 254:     if (conn && snapTarget && snapTarget.compat !== 'invalid') {
+ 255:       onConnect(conn.from, snapTarget.nodeId, snapTarget.portIndex, conn.fromPort ?? 0);
+ 256:       setConn(null);
+ 257:       setSnapTarget(null);
+ 258:     }
+ 259:     if (boxSel) {
+ 260:       const minX = Math.min(boxSel.x0, boxSel.x1);
+ 261:       const minY = Math.min(boxSel.y0, boxSel.y1);
+ 262:       const maxX = Math.max(boxSel.x0, boxSel.x1);
+ 263:       const maxY = Math.max(boxSel.y0, boxSel.y1);
+ 264:       const moved = Math.abs(boxSel.x1 - boxSel.x0) > 4 || Math.abs(boxSel.y1 - boxSel.y0) > 4;
+ 265:       if (moved) {
+ 266:         const gx0 = (minX - pan.x) / zoom;
+ 267:         const gy0 = (minY - pan.y) / zoom;
+ 268:         const gx1 = (maxX - pan.x) / zoom;
+ 269:         const gy1 = (maxY - pan.y) / zoom;
+ 270:         const inside = nodes
+ 271:           .filter((n) => {
+ 272:             const nx0 = n.x, ny0 = n.y, nx1 = n.x + NW, ny1 = n.y + nodeHeight(n.type);
+ 273:             return nx1 >= gx0 && nx0 <= gx1 && ny1 >= gy0 && ny0 <= gy1;
+ 274:           })
+ 275:           .map((n) => n.id);
+ 276:         const next = boxSel.append ? Array.from(new Set([...selectedIds, ...inside])) : inside;
+ 277:         setSelectedIds(next);
+ 278:         setSel(next[0] ?? null);
+ 279:         suppressCanvasClickRef.current = true;
+ 280:       }
+ 281:       setBoxSel(null);
+ 282:     }
+ 283:     if (livePositions) {
+ 284:       Object.entries(livePositions).forEach(([id, pos]) => onMove(id, pos));
+ 285:       setLivePositions(null);
+ 286:     }
+ 287:     setDrag(null);
+ 288:     setMultiDrag(null);
+ 289:     setPanDrag(null);
+ 290:   }, [boxSel, conn, snapTarget, onConnect, pan.x, pan.y, zoom, nodes, selectedIds, livePositions, onMove]);
+ 291: 
+ 292:   const onMD = useCallback((e: React.MouseEvent) => { 
+ 293:     if (e.button === 0) {
+ 294:       const r = rect();
+ 295:       const mx = e.clientX - r.left;
+ 296:       const my = e.clientY - r.top;
+ 297:       setBoxSel({ x0: mx, y0: my, x1: mx, y1: my, append: e.shiftKey });
+ 298:       return;
+ 299:     }
+ 300:     if (e.button === 1 || e.button === 2) { 
+ 301:       // Only pan if not clicking a node (handled by stopPropagation in startDrag)
+ 302:       // But startDrag is on NodeCard, so if we are here, we clicked background.
+ 303:       // Wait, context menu is on right click (button 2).
+ 304:       if (e.button === 1) { // Middle click pan
+ 305:          e.preventDefault(); setPanDrag({ x: e.clientX, y: e.clientY }); 
+ 306:       }
+ 307:     } 
+ 308:   }, []);
+ 309: 
+ 310:   const distanceToSegment = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
+ 311:     const vx = x2 - x1;
+ 312:     const vy = y2 - y1;
+ 313:     const wx = px - x1;
+ 314:     const wy = py - y1;
+ 315:     const c1 = vx * wx + vy * wy;
+ 316:     if (c1 <= 0) return Math.hypot(px - x1, py - y1);
+ 317:     const c2 = vx * vx + vy * vy;
+ 318:     if (c2 <= c1) return Math.hypot(px - x2, py - y2);
+ 319:     const b = c1 / c2;
+ 320:     const bx = x1 + b * vx;
+ 321:     const by = y1 + b * vy;
+ 322:     return Math.hypot(px - bx, py - by);
+ 323:   };
+ 324: 
+ 325:   const detectTargetAt = useCallback((gx: number, gy: number): GraphMenuTarget => {
+ 326:     const portThreshold = 10 / zoom;
+ 327: 
+ 328:     // Ports first
+ 329:     for (const n of effectiveNodes) {
+ 330:       const def = NODE_REGISTRY[n.type];
+ 331:       if (!def) continue;
+ 332:       if (!isOutputNodeType(n.type) && def.outputs?.length) {
+ 333:         const outCount = def.outputs.length;
+ 334:         for (let i = 0; i < outCount; i++) {
+ 335:           const pos = outPos(n, i, outCount);
+ 336:           if (Math.hypot(gx - pos.x, gy - pos.y) <= portThreshold) {
+ 337:             return { kind: 'port', nodeId: n.id, portIndex: i, direction: 'out', type: def.outputs[i]?.type };
+ 338:           }
+ 339:         }
+ 340:       }
+ 341:       for (let i = 0; i < def.inputs.length; i++) {
+ 342:         const ix = n.x;
+ 343:         const iyShifted = n.y + HDR + PREVIEW_H + i * ROW + ROW / 2;
+ 344:         if (Math.hypot(gx - ix, gy - iyShifted) <= portThreshold) {
+ 345:           return { kind: 'port', nodeId: n.id, portIndex: i, direction: 'in', type: def.inputs[i].type };
+ 346:         }
+ 347:       }
+ 348:     }
+ 349: 
+ 350:     // Nodes
+ 351:     for (let i = effectiveNodes.length - 1; i >= 0; i--) {
+ 352:       const n = effectiveNodes[i];
+ 353:       const w = NW;
+ 354:       const h = nodeHeight(n.type);
+ 355:       if (gx >= n.x && gx <= n.x + w && gy >= n.y && gy <= n.y + h) {
+ 356:         return { kind: 'node', nodeId: n.id };
+ 357:       }
+ 358:     }
+ 359: 
+ 360:     // Edges (sampled Bezier)
+ 361:     const edgeThreshold = 9 / zoom;
+ 362:     for (const ed of edges) {
+ 363:       const fn = effectiveNodes.find((n) => n.id === ed.fromId);
+ 364:       const tn = effectiveNodes.find((n) => n.id === ed.toId);
+ 365:       const fromDef = fn ? NODE_REGISTRY[fn.type] : null;
+ 366:       if (!fn || !tn || !fromDef) continue;
+ 367:       const s = outPos(fn, ed.fromPort, fromDef.outputs?.length ?? 1);
+ 368:       const t = inPos(tn, ed.toPort);
+ 369:       const d = Math.max(Math.abs(t.x - s.x) * 0.5, 55);
+ 370:       let minDist = Number.POSITIVE_INFINITY;
+ 371:       let px = s.x, py = s.y;
+ 372:       for (let step = 1; step <= 20; step++) {
+ 373:         const tt = step / 20;
+ 374:         const u = 1 - tt;
+ 375:         const x = u * u * u * s.x + 3 * u * u * tt * (s.x + d) + 3 * u * tt * tt * (t.x - d) + tt * tt * tt * t.x;
+ 376:         const y = u * u * u * s.y + 3 * u * u * tt * s.y + 3 * u * tt * tt * t.y + tt * tt * tt * t.y;
+ 377:         minDist = Math.min(minDist, distanceToSegment(gx, gy, px, py, x, y));
+ 378:         px = x;
+ 379:         py = y;
+ 380:       }
+ 381:       if (minDist <= edgeThreshold) {
+ 382:         return { kind: 'edge', edgeId: ed.id };
+ 383:       }
+ 384:     }
+ 385: 
+ 386:     return { kind: 'canvas' };
+ 387:   }, [edges, effectiveNodes, zoom]);
+ 388: 
+ 389:   const onContextMenu = useCallback((e: React.MouseEvent) => {
+ 390:     e.preventDefault();
+ 391:     const r = rect();
+ 392:     const gx = (e.clientX - r.left - pan.x) / zoom;
+ 393:     const gy = (e.clientY - r.top - pan.y) / zoom;
+ 394:     if (onRequestContextMenu) {
+ 395:       onRequestContextMenu({
+ 396:         clientX: e.clientX,
+ 397:         clientY: e.clientY,
+ 398:         graphX: gx,
+ 399:         graphY: gy,
+ 400:         target: detectTargetAt(gx, gy)
+ 401:       });
+ 402:     }
+ 403:   }, [detectTargetAt, onRequestContextMenu, pan, zoom]);
+ 404: 
+ 405:   const onDragOver = useCallback((e: React.DragEvent) => {
+ 406:     if (e.dataTransfer.types.includes('application/nt-node-type')) {
+ 407:       e.preventDefault();
+ 408:       e.dataTransfer.dropEffect = 'copy';
+ 409:     }
+ 410:   }, []);
+ 411: 
+ 412:   const onDropNode = useCallback((e: React.DragEvent) => {
+ 413:     const type = e.dataTransfer.getData('application/nt-node-type');
+ 414:     if (!type) return;
+ 415:     e.preventDefault();
+ 416:     const pos = toG(e.clientX, e.clientY);
+ 417:     onAddNode(type, pos.x, pos.y);
+ 418:   }, [toG, onAddNode]);
+ 419: 
+ 420:   const startDrag = useCallback((e: React.MouseEvent, id: string) => {
+ 421:     e.stopPropagation();
+ 422:     const n = nodes.find(x => x.id === id); if (!n) return;
+ 423:     const g = toG(e.clientX, e.clientY);
+ 424:     if (selectedSet.has(id) && selectedIds.length > 1) {
+ 425:       const starts: Record<string, { x: number, y: number }> = {};
+ 426:       selectedIds.forEach((sid) => {
+ 427:         const sn = nodes.find((nn) => nn.id === sid);
+ 428:         if (sn) starts[sid] = { x: sn.x, y: sn.y };
+ 429:       });
+ 430:       setMultiDrag({ startGX: g.x, startGY: g.y, starts });
+ 431:       return;
+ 432:     }
+ 433:     setSel(id);
+ 434:     setSelectedIds([id]);
+ 435:     setDrag({ id, ox: g.x - n.x, oy: g.y - n.y });
+ 436:   }, [nodes, toG, selectedIds, selectedSet]);
+ 437:   const onOut = useCallback((e: React.MouseEvent, id: string, portIndex: number = 0) => {
+ 438:     e.stopPropagation(); setSel(id); setSelectedIds([id]);
+ 439:     const def = NODE_REGISTRY[id] ?? NODE_REGISTRY[nodes.find(n => n.id === id)?.type ?? ''];
+ 440:     const fromType = def?.outputs[portIndex]?.type as DataType | undefined;
+ 441:     setConn({ from: id, fromPort: portIndex, fromType });
+ 442:     setSnapTarget(null);
+ 443:   }, [nodes]);
+ 444:   const onIn = useCallback((e: React.MouseEvent, id: string, port: number) => { e.stopPropagation(); if (!conn || conn.from === id) return; onConnect(conn.from, id, port, conn.fromPort ?? 0); setConn(null); setSnapTarget(null); }, [conn, onConnect]);
+ 445:   const onSelectNode = useCallback((id: string) => { setSel(id); setSelectedIds([id]); }, []);
+ 446:   const onOpenNode = useCallback((id: string) => {
+ 447:     setSel(id);
+ 448:     setSelectedIds([id]);
+ 449:     onNodeOpen?.(id);
+ 450:   }, [onNodeOpen]);
+ 451:   const pScreen = useCallback((n: NodeData, isOut: boolean, pi = 0) => {
+ 452:     const d = NODE_REGISTRY[n.type];
+ 453:     const outCount = d?.outputs?.length ?? 1;
+ 454:     const b = isOut ? outPos(n, pi, outCount) : inPos(n, pi);
+ 455:     return { x: b.x * zoom + pan.x, y: b.y * zoom + pan.y };
+ 456:   }, [pan, zoom]);
+ 457:   const pendWire = useMemo(() => {
+ 458:     if (!conn) return null;
+ 459:     const fn = effectiveNodes.find(n => n.id === conn.from);
+ 460:     if (!fn) return null;
+ 461:     const fp = pScreen(fn, true, conn.fromPort ?? 0);
+ 462:     const endX = snapTarget ? snapTarget.screenX : mouse.x;
+ 463:     const endY = snapTarget ? snapTarget.screenY : mouse.y;
+ 464:     const path = bz(fp.x, fp.y, endX, endY);
+ 465:     let color = dataTypeColor(conn.fromType ?? 'float');
+ 466:     let opacity = 0.6;
+ 467:     if (snapTarget) {
+ 468:       if (snapTarget.compat === 'exact') { color = '#22c55e'; opacity = 0.9; }
+ 469:       else if (snapTarget.compat === 'cast') { color = '#eab308'; opacity = 0.85; }
+ 470:       else { color = '#ef4444'; opacity = 0.85; }
+ 471:     }
+ 472:     return { path, color, opacity };
+ 473:   }, [conn, effectiveNodes, mouse, pScreen, snapTarget]);
+ 474: 
+ 475:   const dsp = 26 * zoom, dox = ((pan.x % dsp) + dsp) % dsp, doy = ((pan.y % dsp) + dsp) % dsp;
+ 476:   const selNode = nodes.find(n => n.id === sel);
+ 477: 
+ 478:   return (
+ 479:     <div ref={ref} style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden", cursor: conn ? "crosshair" : panDrag ? "grabbing" : "default" }}
+ 480:       onMouseMove={onMM} onMouseUp={onMU} onMouseDown={onMD} onContextMenu={onContextMenu}
+ 481:       onDragOver={onDragOver} onDrop={onDropNode}>
+ 482:       <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+ 483:         <defs>
+ 484:           <pattern id="dg" width={dsp} height={dsp} patternUnits="userSpaceOnUse" patternTransform={`translate(${dox} ${doy})`}>
+ 485:             <circle cx="0" cy="0" r={clamp(.65 * zoom, .3, 1.1)} fill="#ffffff09" />
+ 486:           </pattern>
+ 487:         </defs>
+ 488:         <rect width="100%" height="100%" fill="url(#dg)" />
+ 489:         <line x1={pan.x} y1={0} x2={pan.x} y2="100%" stroke="#ffffff05" strokeWidth="1" />
+ 490:         <line x1={0} y1={pan.y} x2="100%" y2={pan.y} stroke="#ffffff05" strokeWidth="1" />
+ 491:       </svg>
+ 492:       <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} onClick={() => {
+ 493:         if (suppressCanvasClickRef.current) { suppressCanvasClickRef.current = false; return; }
+ 494:         setConn(null); setSnapTarget(null); setSel(null); setSelectedIds([]); onCanvasClick?.();
+ 495:       }}>
+ 496:         <rect width="100%" height="100%" fill="transparent" />
+ 497:         <defs>
+ 498:         {edges.map(ed => {
+ 499:           const fn = effectiveNodes.find(n => n.id === ed.fromId), tn = effectiveNodes.find(n => n.id === ed.toId);
+ 500:           if (!fn || !tn) return null;
+ 501:           const fromDef = NODE_REGISTRY[fn.type];
+ 502:           const toDef = NODE_REGISTRY[tn.type];
+ 503:           const outType = (fromDef?.outputs[ed.fromPort]?.type as DataType) ?? 'float';
+ 504:           const inType = (toDef?.inputs[ed.toPort]?.type as DataType) ?? 'float';
+ 505:           const fromColor = dataTypeColor(outType);
+ 506:           const toColor = dataTypeColor(inType);
+ 507:           const needsGradient = outType !== inType && NUMERIC_TYPES.includes(outType) && NUMERIC_TYPES.includes(inType);
+ 508:           if (!needsGradient) return null;
+ 509:           const fp = pScreen(fn, true, ed.fromPort), tp = pScreen(tn, false, ed.toPort);
+ 510:           return (
+ 511:             <linearGradient key={ed.id} id={`edge-grad-${ed.id}`} x1={fp.x} y1={fp.y} x2={tp.x} y2={tp.y} gradientUnits="userSpaceOnUse">
+ 512:               <stop offset="0%" stopColor={fromColor} />
+ 513:               <stop offset="100%" stopColor={toColor} />
+ 514:             </linearGradient>
+ 515:           );
+ 516:         })}
+ 517:         </defs>
+ 518:         {edges.map(ed => {
+ 519:           const fn = effectiveNodes.find(n => n.id === ed.fromId), tn = effectiveNodes.find(n => n.id === ed.toId); if (!fn || !tn) return null;
+ 520:           const fromDef = NODE_REGISTRY[fn.type];
+ 521:           const toDef = NODE_REGISTRY[tn.type];
+ 522:           const outType = (fromDef?.outputs[ed.fromPort]?.type as DataType) ?? 'float';
+ 523:           const inType = (toDef?.inputs[ed.toPort]?.type as DataType) ?? 'float';
+ 524:           const fromColor = dataTypeColor(outType);
+ 525:           const toColor = dataTypeColor(inType);
+ 526:           const needsGradient = outType !== inType && NUMERIC_TYPES.includes(outType) && NUMERIC_TYPES.includes(inType);
+ 527:           const fp = pScreen(fn, true, ed.fromPort), tp = pScreen(tn, false, ed.toPort), path = bz(fp.x, fp.y, tp.x, tp.y);
+ 528:           const stroke = needsGradient ? `url(#edge-grad-${ed.id})` : fromColor;
+ 529:           return (
+ 530:             <g key={ed.id}>
+ 531:               <path d={path} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" pointerEvents="none" />
+ 532:               <path d={path} fill="none" stroke="transparent" strokeWidth="16" style={{ cursor: "pointer" }} onClick={e => { e.stopPropagation(); onDelEdge(ed.id); }} />
+ 533:             </g>
+ 534:           );
+ 535:         })}
+ 536:         {pendWire && (
+ 537:           <g pointerEvents="none">
+ 538:             <path d={pendWire.path} fill="none" stroke={pendWire.color} strokeWidth={snapTarget ? 2.5 : 1.8} strokeDasharray={snapTarget ? 'none' : '6 4'} strokeLinecap="round" opacity={pendWire.opacity} />
+ 539:             {snapTarget && (
+ 540:               <>
+ 541:                 <circle cx={snapTarget.screenX} cy={snapTarget.screenY} r={10} fill={pendWire.color + '30'} stroke={pendWire.color} strokeWidth={2} opacity={0.9} />
+ 542:                 <circle cx={snapTarget.screenX} cy={snapTarget.screenY} r={16} fill="none" stroke={pendWire.color} strokeWidth={0.8} opacity={0.4}>
+ 543:                   <animate attributeName="r" from="12" to="22" dur="0.8s" repeatCount="indefinite" />
+ 544:                   <animate attributeName="opacity" from="0.5" to="0" dur="0.8s" repeatCount="indefinite" />
+ 545:                 </circle>
+ 546:               </>
+ 547:             )}
+ 548:           </g>
+ 549:         )}
+ 550:         {boxSel && (
+ 551:           <g pointerEvents="none">
+ 552:             <rect
+ 553:               x={Math.min(boxSel.x0, boxSel.x1)}
+ 554:               y={Math.min(boxSel.y0, boxSel.y1)}
+ 555:               width={Math.abs(boxSel.x1 - boxSel.x0)}
+ 556:               height={Math.abs(boxSel.y1 - boxSel.y0)}
+ 557:               fill="#3b82f630"
+ 558:               stroke="#60a5fa"
+ 559:               strokeWidth={1}
+ 560:               strokeDasharray="4 3"
+ 561:             />
+ 562:           </g>
+ 563:         )}
+ 564:       </svg>
+ 565:       <div style={{ position: "absolute", inset: 0, transform: `translate(${pan.x}px,${pan.y}px) scale(${zoom})`, transformOrigin: "0 0", pointerEvents: "none" }}>
+ 566:         {effectiveNodes.map(n => (
+ 567:           <NodeCard key={n.id} node={n} edges={edges} allNodes={nodes} isSel={selectedSet.has(n.id)} isConn={!!conn} connFrom={conn?.from ?? null}
+ 568:             connFromPort={conn?.fromPort}
+ 569:             connFromType={conn?.fromType}
+ 570:             snapTarget={conn && snapTarget?.nodeId === n.id ? snapTarget : null}
+ 571:             previewUrl={nodePreviews?.[n.id]}
+ 572:             compileMs={nodeTimings?.[n.id]}
+ 573:             onDrag={startDrag} onOut={onOut} onIn={onIn} onUpdate={onUpdateParam} onDelete={onDelNode} onSelect={onSelectNode} onOpen={onOpenNode} />
+ 574:         ))}
+ 575:       </div>
+ 576:       
+ 577:       <ZoomBar zoom={zoom} onZoom={zoomTo} onReset={() => { setPan({ x: 60, y: 60 }); setZoom(1); }} />
+ 578:       <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 22, display: "flex", alignItems: "center", padding: "0 12px", gap: 14, fontSize: 8, color: "#1c1c2e", letterSpacing: .7, pointerEvents: "none", borderTop: "1px solid #0e0e1c" }}>
+ 579:         <span>SCROLL zoom</span><span>MMB pan</span><span>RMB add node</span><span>DBLCLICK node open/pin</span><span>CLICK EDGE delete wire</span><span>DEL delete node</span><span>ESC cancel</span>
+ 580:         {conn && !snapTarget && <span style={{ color: "#94a3b8", marginLeft: 4 }}>● CONNECTING — drag to input port</span>}
+ 581:         {conn && snapTarget && snapTarget.compat === 'exact' && <span style={{ color: "#22c55e", marginLeft: 4 }}>● SNAP — release to connect</span>}
+ 582:         {conn && snapTarget && snapTarget.compat === 'cast' && <span style={{ color: "#eab308", marginLeft: 4 }}>● SNAP (implicit cast) — release to connect</span>}
+ 583:         {conn && snapTarget && snapTarget.compat === 'invalid' && <span style={{ color: "#ef4444", marginLeft: 4 }}>● INCOMPATIBLE — types don't match</span>}
+ 584:         {selNode && !conn && !isOutputNodeType(selNode.type) && (
+ 585:           <span style={{ color: catColor(selNode.type), marginLeft: 4 }}>◈ {NODE_REGISTRY[selNode.type]?.label} selected · DEL to delete</span>
+ 586:         )}
+ 587:       </div>
+ 588:     </div>
+ 589:   );
+ 590: }
