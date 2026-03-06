@@ -1,3 +1,5 @@
+import { appendAppLog } from './logs';
+
 const MAX_UNIFORMS = 256;
 const UNIFORM_BUF_SIZE = MAX_UNIFORMS * 4;
 
@@ -84,13 +86,25 @@ export class GPUQuadRenderer {
     const t0 = performance.now();
     try {
       const module = this.device.createShaderModule({ code: wgsl });
-      const info = await module.getCompilationInfo();
-      const diagnostics = info.messages.map((msg) => ({
-        type: msg.type,
-        lineNum: msg.lineNum,
-        linePos: msg.linePos,
-        message: msg.message
-      }));
+      let diagnostics: Array<{ type: string; lineNum: number; linePos: number; message: string }> = [];
+
+      try {
+        const info = await module.getCompilationInfo();
+        diagnostics = info.messages.map((msg) => ({
+          type: msg.type,
+          lineNum: msg.lineNum,
+          linePos: msg.linePos,
+          message: msg.message
+        }));
+      } catch (diagnosticErr) {
+        appendAppLog({
+          level: 'warn',
+          source: 'viewport',
+          message: 'WGSL compilation diagnostics unavailable',
+          details: diagnosticErr instanceof Error ? `${diagnosticErr.name}: ${diagnosticErr.message}` : String(diagnosticErr),
+        });
+      }
+
       const errors = diagnostics.filter((msg) => msg.type === 'error');
       if (errors.length > 0) {
         const top = errors

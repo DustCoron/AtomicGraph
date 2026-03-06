@@ -10,13 +10,16 @@ if (!rootEl) {
   throw new Error('Root element #root not found.');
 }
 
+const appTree = (
+  <CrashBoundary>
+    <App />
+  </CrashBoundary>
+);
+const isDev = !!((import.meta as any).env?.DEV);
+
 try {
   createRoot(rootEl).render(
-    <StrictMode>
-      <CrashBoundary>
-        <App />
-      </CrashBoundary>
-    </StrictMode>,
+    isDev ? appTree : <StrictMode>{appTree}</StrictMode>,
   );
 } catch (err: any) {
   const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);

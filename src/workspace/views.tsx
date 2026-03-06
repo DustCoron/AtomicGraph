@@ -65,6 +65,8 @@ export interface AppContextValue {
   onSelectionChange: (id: string | null) => void;
   onCanvasClick?: () => void;
   onRequestContextMenu?: (req: GraphContextMenuRequest) => void;
+  onCanvasInteractionStart?: () => void;
+  onCanvasInteractionEnd?: () => void;
   nodePreviews?: Record<string, string>;
   outputPreviewSurfaces?: Partial<Record<OutputChannel, OutputPreviewSurface>>;
   nodeTimings?: Record<string, number>;
@@ -326,6 +328,8 @@ export function GraphView() {
         onAddNode={app.onAddNode}
         onDelNode={app.onDeleteNode}
         onSelectionChange={app.onSelectionChange}
+        onCanvasInteractionStart={app.onCanvasInteractionStart}
+        onCanvasInteractionEnd={app.onCanvasInteractionEnd}
         onNodeOpen={onNodeOpen}
         onCanvasClick={app.onCanvasClick}
         onRequestContextMenu={app.onRequestContextMenu}

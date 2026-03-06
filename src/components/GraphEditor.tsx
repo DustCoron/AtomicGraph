@@ -104,6 +104,8 @@ interface GraphEditorProps {
   onDelNode: (id: string) => void;
   onSelectionChange?: (id: string | null) => void;
   onNodeOpen?: (id: string) => void;
+  onCanvasInteractionStart?: () => void;
+  onCanvasInteractionEnd?: () => void;
   onCanvasClick?: () => void;
   onRequestContextMenu?: (req: GraphContextMenuRequest) => void;
   nodePreviews?: Record<string, string>;
@@ -127,6 +129,8 @@ export function GraphEditor({
   onDelNode,
   onSelectionChange,
   onNodeOpen,
+  onCanvasInteractionStart,
+  onCanvasInteractionEnd,
   onCanvasClick,
   onRequestContextMenu,
   nodePreviews,
@@ -146,13 +150,39 @@ export function GraphEditor({
   const [sel, setSel] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
-  const [frameDrag, setFrameDrag] = useState<{ id: string; ox: number; oy: number } | null>(null);
+  const [frameDrag, setFrameDrag] = useState<{
+    id: string;
+    ox: number;
+    oy: number;
+    frameStartX: number;
+    frameStartY: number;
+    starts: Record<string, { x: number; y: number }>;
+  } | null>(null);
   const [frameResize, setFrameResize] = useState<{ id: string; startGX: number; startGY: number; startW: number; startH: number } | null>(null);
   const [liveFrameRects, setLiveFrameRects] = useState<Record<string, { x: number; y: number; width: number; height: number }> | null>(null);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
   const [panDrag, setPanDrag] = useState<{ x: number, y: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const interactionActiveRef = useRef(false);
+
+  const beginCanvasInteraction = useCallback(() => {
+    if (interactionActiveRef.current) return;
+    interactionActiveRef.current = true;
+    onCanvasInteractionStart?.();
+  }, [onCanvasInteractionStart]);
+
+  const endCanvasInteraction = useCallback(() => {
+    if (!interactionActiveRef.current) return;
+    interactionActiveRef.current = false;
+    onCanvasInteractionEnd?.();
+  }, [onCanvasInteractionEnd]);
+
+  const isNodeInFrame = useCallback((node: NodeData, frame: FrameData) => {
+    const cx = node.x + NW / 2;
+    const cy = node.y + nodeHeight(node.type) / 2;
+    return cx >= frame.x && cx <= frame.x + frame.width && cy >= frame.y && cy <= frame.y + frame.height;
+  }, []);
 
   const rect = () => ref.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
   const toG = useCallback((sx: number, sy: number) => { const r = rect(); return { x: (sx - r.left - pan.x) / zoom, y: (sy - r.top - pan.y) / zoom }; }, [pan, zoom]);
@@ -256,6 +286,10 @@ export function GraphEditor({
         setFrameDrag(null);
         setFrameResize(null);
         setLiveFrameRects(null);
+        setDrag(null);
+        setMultiDrag(null);
+        setPanDrag(null);
+        endCanvasInteraction();
         return;
       }
       const active = document.activeElement as HTMLElement | null;
@@ -287,7 +321,7 @@ export function GraphEditor({
       }
     };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
-  }, [sel, selectedIds, nodes, onDelNode, onDelFrame, selectedFrameId]);
+  }, [sel, selectedIds, nodes, onDelNode, onDelFrame, selectedFrameId, endCanvasInteraction]);
 
   const SNAP_RADIUS = 35;
 
@@ -314,16 +348,25 @@ export function GraphEditor({
       Object.entries(multiDrag.starts).forEach(([id, p]) => { next[id] = { x: p.x + dx, y: p.y + dy }; });
       setLivePositions(next);
     }
-    if (frameDrag) {
-      const frame = frames.find((f) => f.id === frameDrag.id);
-      if (frame) {
-        const gx = (mx - pan.x) / zoom;
-        const gy = (my - pan.y) / zoom;
-        const x = gx - frameDrag.ox;
-        const y = gy - frameDrag.oy;
-        setLiveFrameRects({ [frame.id]: { x, y, width: frame.width, height: frame.height } });
+      if (frameDrag) {
+        const frame = frames.find((f) => f.id === frameDrag.id);
+        if (frame) {
+          const gx = (mx - pan.x) / zoom;
+          const gy = (my - pan.y) / zoom;
+          const x = gx - frameDrag.ox;
+          const y = gy - frameDrag.oy;
+          setLiveFrameRects({ [frame.id]: { x, y, width: frame.width, height: frame.height } });
+          const dx = x - frameDrag.frameStartX;
+          const dy = y - frameDrag.frameStartY;
+          if (Object.keys(frameDrag.starts).length > 0) {
+            const next: Record<string, { x: number; y: number }> = {};
+            Object.entries(frameDrag.starts).forEach(([id, p]) => {
+              next[id] = { x: p.x + dx, y: p.y + dy };
+            });
+            setLivePositions(next);
+          }
+        }
       }
-    }
     if (frameResize) {
       const frame = frames.find((f) => f.id === frameResize.id);
       if (frame) {
@@ -361,6 +404,7 @@ export function GraphEditor({
   }, [drag, multiDrag, frameDrag, frameResize, boxSel, panDrag, pan, zoom, conn, effectiveNodes, frames, typeCompat]);
 
   const onMU = useCallback(() => {
+    const hadCanvasInteraction = !!drag || !!multiDrag || !!frameDrag || !!frameResize;
     if (conn && snapTarget && snapTarget.compat !== 'invalid') {
       onConnect(conn.from, snapTarget.nodeId, snapTarget.portIndex, conn.fromPort ?? 0);
       setConn(null);
@@ -402,12 +446,13 @@ export function GraphEditor({
       });
       setLiveFrameRects(null);
     }
+    if (hadCanvasInteraction) endCanvasInteraction();
     setDrag(null);
     setMultiDrag(null);
     setFrameDrag(null);
     setFrameResize(null);
     setPanDrag(null);
-  }, [boxSel, conn, frameDrag, frameResize, snapTarget, onConnect, pan.x, pan.y, zoom, nodes, selectedIds, livePositions, liveFrameRects, onMove, onMoveFrame, onResizeFrame]);
+  }, [boxSel, conn, frameDrag, frameResize, snapTarget, onConnect, pan.x, pan.y, zoom, nodes, selectedIds, livePositions, liveFrameRects, onMove, onMoveFrame, onResizeFrame, endCanvasInteraction]);
 
   const onMD = useCallback((e: React.MouseEvent) => { 
     if (e.button === 0) {
@@ -554,6 +599,7 @@ export function GraphEditor({
     e.stopPropagation();
     const n = nodes.find(x => x.id === id); if (!n) return;
     const g = toG(e.clientX, e.clientY);
+    beginCanvasInteraction();
     if (selectedSet.has(id) && selectedIds.length > 1) {
       const starts: Record<string, { x: number, y: number }> = {};
       selectedIds.forEach((sid) => {
@@ -567,27 +613,45 @@ export function GraphEditor({
     setSelectedIds([id]);
     setSelectedFrameId(null);
     setDrag({ id, ox: g.x - n.x, oy: g.y - n.y });
-  }, [nodes, toG, selectedIds, selectedSet]);
+  }, [nodes, toG, selectedIds, selectedSet, beginCanvasInteraction]);
   const startFrameDrag = useCallback((e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const frame = effectiveFrames.find((f) => f.id === id);
     if (!frame) return;
+    beginCanvasInteraction();
     const g = toG(e.clientX, e.clientY);
     setSelectedFrameId(id);
     setSel(null);
     setSelectedIds([]);
-    setFrameDrag({ id, ox: g.x - frame.x, oy: g.y - frame.y });
-  }, [effectiveFrames, toG]);
+    const starts: Record<string, { x: number; y: number }> = {};
+    effectiveNodes.forEach((node) => {
+      if (isNodeInFrame(node, frame)) {
+        starts[node.id] = { x: node.x, y: node.y };
+      }
+    });
+    setFrameDrag({
+      id,
+      ox: g.x - frame.x,
+      oy: g.y - frame.y,
+      frameStartX: frame.x,
+      frameStartY: frame.y,
+      starts,
+    });
+    if (Object.keys(starts).length > 0) {
+      setLivePositions(starts);
+    }
+  }, [effectiveFrames, effectiveNodes, toG, isNodeInFrame, beginCanvasInteraction]);
   const startFrameResize = useCallback((e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const frame = effectiveFrames.find((f) => f.id === id);
     if (!frame) return;
+    beginCanvasInteraction();
     const g = toG(e.clientX, e.clientY);
     setSelectedFrameId(id);
     setSel(null);
     setSelectedIds([]);
     setFrameResize({ id, startGX: g.x, startGY: g.y, startW: frame.width, startH: frame.height });
-  }, [effectiveFrames, toG]);
+  }, [effectiveFrames, toG, beginCanvasInteraction]);
   const onOut = useCallback((e: React.MouseEvent, id: string, portIndex: number = 0) => {
     e.stopPropagation(); setSel(id); setSelectedIds([id]); setSelectedFrameId(null);
     const def = NODE_REGISTRY[id] ?? NODE_REGISTRY[nodes.find(n => n.id === id)?.type ?? ''];

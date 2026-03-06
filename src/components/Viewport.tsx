@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { CompiledShader } from '../core/compiler';
+import { CompiledShader, UniformLayoutEntry } from '../core/compiler';
 import { GPUQuadRenderer } from '../core/gpu-renderer';
 import { appendAppLog } from '../core/logs';
 import { PerformanceMode, ViewportPerfSample, percentile } from '../core/perf';
@@ -7,6 +7,8 @@ import { PerformanceMode, ViewportPerfSample, percentile } from '../core/perf';
 const MAX_DPR = 2;
 const MIN_BACKING = 128;
 const PERF_RING = 300;
+const INITIAL_COMPILE_RETRY_MS = 500;
+const MAX_COMPILE_RETRY_MS = 8000;
 
 interface ViewportProps {
   compiled: CompiledShader | null;
@@ -52,6 +54,54 @@ function showError(errEl: HTMLDivElement | null, inlineErrors: boolean, message:
   errEl.style.display = 'block';
 }
 
+function uniformValueKey(value: any): string {
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return String(value);
+  if (Array.isArray(value)) return `[${value.map((v) => uniformValueKey(v)).join(',')}]`;
+  if (value == null) return 'null';
+  return JSON.stringify(value);
+}
+
+function buildUniformSignature(compiled: CompiledShader): string {
+  const parts: string[] = [];
+
+  if (compiled.uniformLayout && compiled.uniformLayout.length > 0) {
+    for (const entry of compiled.uniformLayout) {
+      const binding = compiled.uniformBindings[entry.name];
+      if (!binding) continue;
+      parts.push(`${entry.name}:${uniformValueKey(binding.value)}`);
+    }
+    return parts.join('|');
+  }
+
+  if (compiled.uniforms.length > 0) {
+    for (const uniform of compiled.uniforms) {
+      const binding = compiled.uniformBindings[uniform.name];
+      if (!binding) continue;
+      parts.push(`${uniform.name}:${uniformValueKey(binding.value)}`);
+    }
+    return parts.join('|');
+  }
+
+  return Object.entries(compiled.uniformBindings)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, binding]) => `${name}:${uniformValueKey(binding.value)}`).join('|');
+}
+
+function resolveUsesTime(compiled: CompiledShader): boolean {
+  const timeEntry = compiled.uniformLayout?.find((entry: UniformLayoutEntry) => entry.name === 'u_time');
+  if (!timeEntry) return false;
+  if (!compiled.wgsl) return false;
+  return compiled.wgsl.includes(`uf(${timeEntry.index}u)`);
+}
+
+function buildStaticRenderTemplate(compiled: CompiledShader, uniformSignature: string): string {
+  return `${compiled.hash}|${compiled.fragment.length}|${compiled.vertex.length}|${uniformSignature}`;
+}
+
+function buildStaticRenderKey(template: string, backingW: number, backingH: number, zoom: number, offset: [number, number], tile: boolean): string {
+  return `${template}|${backingW}x${backingH}|z=${zoom.toFixed(4)}|o=${offset[0].toFixed(5)},${offset[1].toFixed(5)}|t=${tile ? 1 : 0}`;
+}
+
 export function Viewport({
   compiled,
   tile,
@@ -73,6 +123,13 @@ export function Viewport({
     uniformBuf: Float32Array;
     lastShaderHash: string;
     pendingHash: string;
+    compileFailCount: number;
+    compileFailUntil: number;
+    compileFailHash: string;
+    cachedStaticRenderTemplate: string;
+    cachedUniformSignature: string;
+    cachedUsesTime: boolean;
+    cachedShaderHash: string;
     lastStaticRenderKey: string;
     t0: number;
     raf: number;
@@ -92,6 +149,10 @@ export function Viewport({
     uniformBuf: new Float32Array(256),
     lastShaderHash: '',
     pendingHash: '',
+    cachedStaticRenderTemplate: '',
+    cachedUniformSignature: '',
+    cachedUsesTime: false,
+    cachedShaderHash: '',
     lastStaticRenderKey: '',
     t0: performance.now(),
     raf: 0,
@@ -101,6 +162,9 @@ export function Viewport({
     frameHead: 0,
     frameCount: 0,
     frameId: 0,
+    compileFailCount: 0,
+    compileFailUntil: 0,
+    compileFailHash: '',
     budgetExceededStreak: 0,
     lastBudgetLogAt: 0,
     compileMsLast: 0,
@@ -224,7 +288,18 @@ export function Viewport({
           }
 
           const c = propsRef.current.compiled;
-          if (c && c.wgsl && c.hash !== g.lastShaderHash && c.hash !== g.pendingHash) {
+          if (
+            c
+            && c.wgsl
+            && c.hash !== g.lastShaderHash
+            && c.hash !== g.pendingHash
+            && !(c.hash === g.compileFailHash && g.compileFailUntil > performance.now())
+          ) {
+            if (g.compileFailHash !== c.hash) {
+              g.compileFailHash = '';
+              g.compileFailUntil = 0;
+              g.compileFailCount = 0;
+            }
             g.pendingHash = c.hash;
             const requestedHash = c.hash;
             g.renderer.setPipelineAsync(c.wgsl, c.hash).then(result => {
@@ -235,6 +310,9 @@ export function Viewport({
               if (!gNow.renderer || (currentCompiled && requestedHash !== currentCompiled.hash)) return;
               if (result.ok) {
                 gNow.lastShaderHash = requestedHash;
+                gNow.compileFailCount = 0;
+                gNow.compileFailUntil = 0;
+                gNow.compileFailHash = '';
                 gNow.lastStaticRenderKey = '';
                 gNow.fatalHash = '';
                 gNow.fatalMessage = '';
@@ -243,6 +321,13 @@ export function Viewport({
               } else {
                 gNow.lastShaderHash = '';
                 gNow.lastStaticRenderKey = '';
+                gNow.compileFailHash = requestedHash;
+                gNow.compileFailCount = Math.min(gNow.compileFailCount + 1, 12);
+                const retryDelay = Math.min(
+                  INITIAL_COMPILE_RETRY_MS * Math.pow(2, Math.min(gNow.compileFailCount - 1, 8)),
+                  MAX_COMPILE_RETRY_MS,
+                );
+                gNow.compileFailUntil = performance.now() + retryDelay;
                 const firstErr = result.diagnostics?.find((m) => m.type === 'error');
                 const lineLoc = firstErr ? `line ${firstErr.lineNum}, col ${firstErr.linePos}` : null;
                 const nodeRef = firstErr ? findNodeRefFromWgsl(c.wgsl!, firstErr.lineNum) : null;
@@ -259,19 +344,24 @@ export function Viewport({
             });
           }
 
-          let shouldRender = true;
-          if (c && c.uniformLayout) {
-            const timeIdx = c.uniformLayout.find((entry) => entry.name === 'u_time')?.index;
-            const usesTime = typeof timeIdx === 'number' && !!c.wgsl?.includes(`uf(${timeIdx}u)`);
-            const uniformKey = Object.entries(c.uniformBindings)
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([name, binding]) => {
-                const value = binding.value;
-                if (Array.isArray(value)) return `${name}=[${value.join(',')}]`;
-                return `${name}=${String(value)}`;
-              })
-              .join('|');
-            const staticRenderKey = `${c.hash}|${g.backingW}x${g.backingH}|z=${zoomRef.current.toFixed(4)}|o=${offsetRef.current[0].toFixed(5)},${offsetRef.current[1].toFixed(5)}|t=${propsRef.current.tile ? 1 : 0}|${uniformKey}`;
+          let shouldRender = g.renderer.isReady;
+          if (shouldRender && c && c.uniformLayout) {
+            const uniformSignature = buildUniformSignature(c);
+            if (g.cachedShaderHash !== c.hash || g.cachedUniformSignature !== uniformSignature) {
+              g.cachedShaderHash = c.hash;
+              g.cachedUniformSignature = uniformSignature;
+              g.cachedUsesTime = resolveUsesTime(c);
+              g.cachedStaticRenderTemplate = buildStaticRenderTemplate(c, g.cachedUniformSignature);
+            }
+            const usesTime = g.cachedUsesTime;
+            const staticRenderKey = buildStaticRenderKey(
+              g.cachedStaticRenderTemplate,
+              g.backingW,
+              g.backingH,
+              zoomRef.current,
+              offsetRef.current,
+              propsRef.current.tile,
+            );
             if (!usesTime && g.lastStaticRenderKey === staticRenderKey) {
               shouldRender = false;
             } else {

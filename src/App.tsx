@@ -37,66 +37,40 @@ const INIT_DATA: GraphData = {
   schemaVersion: 1,
   resolution: 512,
   nodes: [
-    { id: 'out_base', type: 'output_baseColor', x: 1870, y: 120, params: {} },
-    { id: 'out_rough', type: 'output_roughness', x: 1870, y: 290, params: {} },
-    { id: 'out_normal', type: 'output_normal', x: 1870, y: 460, params: {} },
-    { id: 'out_height', type: 'output_height', x: 1870, y: 630, params: {} },
-    { id: 'spots_main', type: 'bnw_spots2_v2', x: 40, y: 70, params: {
-      scale: 11, tileOffsetX: 0.0, tileOffsetY: 0.0, seed: 4242,
-      nonSquareExpansion: true, grainAmount: 0.17, grainThreshold: 0.89, contrast: 1.14
+    { id: 'out_base', type: 'output_baseColor', x: 840, y: 120, params: {} },
+    { id: 'out_rough', type: 'output_roughness', x: 840, y: 260, params: {} },
+    { id: 'out_normal', type: 'output_normal', x: 840, y: 400, params: {} },
+    { id: 'out_height', type: 'output_height', x: 840, y: 540, params: {} },
+
+    { id: 'base_color', type: 'uniform_color', x: 120, y: 40, params: { r: 0.16, g: 0.26, b: 0.36 } },
+    { id: 'spots_main', type: 'bnw_spots2_v2', x: 120, y: 120, params: {
+      scale: 16, tileOffsetX: 0.0, tileOffsetY: 0.0, seed: 4242,
+      nonSquareExpansion: true, grainAmount: 0.2, grainThreshold: 0.88, contrast: 1.1
     } },
-    { id: 'spots_micro', type: 'bnw_spots2_v2', x: 40, y: 300, params: {
-      scale: 22, tileOffsetX: 0.0, tileOffsetY: 0.0, seed: 777,
-      nonSquareExpansion: true, grainAmount: 0.30, grainThreshold: 0.93, contrast: 1.25
-    } },
-    { id: 'blend_height', type: 'blend', x: 280, y: 180, params: { mode: 'multiply', opacity: 0.72 } },
-
-    { id: 'perlin_deposit', type: 'perlin', x: 40, y: 540, params: { scale: 4.6, seed: 1337, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
-    { id: 'dis_deposit', type: 'disorder', x: 280, y: 540, params: { amount: 0.10, scale: 12.0, speed: 0.35, seed: 2048 } },
-    { id: 'blend_deposit', type: 'blend', x: 520, y: 300, params: { mode: 'add', opacity: 0.36 } },
-    { id: 'levels_shape', type: 'levels', x: 760, y: 300, params: { inMin: 0.11, inMax: 0.93, gamma: 1.07 } },
-
-    { id: 'edge_cavity', type: 'edge_detect', x: 760, y: 80, params: { radius: 1.6, strength: 2.0 } },
-    { id: 'blend_cavity', type: 'blend', x: 1020, y: 210, params: { mode: 'burn', opacity: 0.38 } },
-    { id: 'height_final', type: 'levels', x: 1260, y: 210, params: { inMin: 0.04, inMax: 0.99, gamma: 0.88 } },
-
-    { id: 'rough_levels', type: 'levels', x: 1260, y: 420, params: { inMin: 0.18, inMax: 0.97, gamma: 1.35 } },
-    { id: 'rough_micro', type: 'levels', x: 1020, y: 520, params: { inMin: 0.62, inMax: 1.0, gamma: 0.85 } },
-    { id: 'rough_blend', type: 'blend', x: 1480, y: 470, params: { mode: 'screen', opacity: 0.30 } },
-
-    { id: 'albedo_remap', type: 'remap', x: 1260, y: 640, params: { inLo: 0.0, inHi: 1.0, outLo: 0.09, outHi: 0.42 } },
-    { id: 'albedo_micro', type: 'levels', x: 1020, y: 640, params: { inMin: 0.58, inMax: 1.0, gamma: 0.88 } },
-    { id: 'albedo_blend', type: 'blend', x: 1480, y: 640, params: { mode: 'multiply', opacity: 0.22 } }
+    { id: 'perlin_deposit', type: 'perlin', x: 120, y: 260, params: { scale: 4.6, seed: 1337, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
+    { id: 'gaussian_noise', type: 'gaussian_noise', x: 120, y: 340, params: { scale: 12, mean: 0.5, stdDev: 0.16, seed: 7331, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
+    { id: 'warp_motion', type: 'warp', x: 340, y: 260, params: { strength: 0.2 } },
+    { id: 'edge_main', type: 'edge_detect', x: 360, y: 420, params: { radius: 1.2, strength: 1.4 } },
+    { id: 'levels_main', type: 'levels', x: 560, y: 240, params: { inMin: 0.03, inMax: 0.97, gamma: 0.9 } },
+    { id: 'remap_main', type: 'remap', x: 560, y: 360, params: { inLo: 0.1, inHi: 0.9, outLo: 0.0, outHi: 1.0 } },
+    { id: 'blend_height', type: 'blend', x: 760, y: 300, params: { mode: 'multiply', opacity: 0.74 } },
+    { id: 'normal_from_height', type: 'height_to_normal', x: 760, y: 420, params: { strength: 1.35, radius: 1.2, flipY: false } },
   ],
   edges: [
     { id: 'e1', fromId: 'spots_main', fromPort: 0, toId: 'blend_height', toPort: 0 },
-    { id: 'e2', fromId: 'spots_micro', fromPort: 0, toId: 'blend_height', toPort: 1 },
-    { id: 'e3', fromId: 'perlin_deposit', fromPort: 0, toId: 'dis_deposit', toPort: 0 },
-    { id: 'e4', fromId: 'blend_height', fromPort: 0, toId: 'blend_deposit', toPort: 0 },
-    { id: 'e5', fromId: 'dis_deposit', fromPort: 0, toId: 'blend_deposit', toPort: 1 },
-    { id: 'e6', fromId: 'blend_deposit', fromPort: 0, toId: 'levels_shape', toPort: 0 },
-    { id: 'e7', fromId: 'levels_shape', fromPort: 0, toId: 'edge_cavity', toPort: 0 },
-    { id: 'e8', fromId: 'levels_shape', fromPort: 0, toId: 'blend_cavity', toPort: 0 },
-    { id: 'e9', fromId: 'edge_cavity', fromPort: 0, toId: 'blend_cavity', toPort: 1 },
-    { id: 'e10', fromId: 'blend_cavity', fromPort: 0, toId: 'height_final', toPort: 0 },
-    { id: 'e11', fromId: 'height_final', fromPort: 0, toId: 'out_height', toPort: 0 },
-
-    { id: 'e12', fromId: 'height_final', fromPort: 0, toId: 'rough_levels', toPort: 0 },
-    { id: 'e13', fromId: 'spots_micro', fromPort: 0, toId: 'rough_micro', toPort: 0 },
-    { id: 'e14', fromId: 'rough_levels', fromPort: 0, toId: 'rough_blend', toPort: 0 },
-    { id: 'e15', fromId: 'rough_micro', fromPort: 0, toId: 'rough_blend', toPort: 1 },
-    { id: 'e16', fromId: 'rough_blend', fromPort: 0, toId: 'out_rough', toPort: 0 },
-
-    { id: 'e17', fromId: 'height_final', fromPort: 0, toId: 'albedo_remap', toPort: 0 },
-    { id: 'e18', fromId: 'spots_micro', fromPort: 0, toId: 'albedo_micro', toPort: 0 },
-    { id: 'e19', fromId: 'albedo_remap', fromPort: 0, toId: 'albedo_blend', toPort: 0 },
-    { id: 'e20', fromId: 'albedo_micro', fromPort: 0, toId: 'albedo_blend', toPort: 1 },
-    { id: 'e21', fromId: 'albedo_blend', fromPort: 0, toId: 'out_base', toPort: 0 }
+    { id: 'e2', fromId: 'perlin_deposit', fromPort: 0, toId: 'warp_motion', toPort: 0 },
+    { id: 'e3', fromId: 'warp_motion', fromPort: 0, toId: 'edge_main', toPort: 0 },
+    { id: 'e4', fromId: 'gaussian_noise', fromPort: 0, toId: 'blend_height', toPort: 1 },
+    { id: 'e5', fromId: 'blend_height', fromPort: 0, toId: 'levels_main', toPort: 0 },
+    { id: 'e6', fromId: 'levels_main', fromPort: 0, toId: 'remap_main', toPort: 0 },
+    { id: 'e7', fromId: 'remap_main', fromPort: 0, toId: 'normal_from_height', toPort: 0 },
+    { id: 'e8', fromId: 'remap_main', fromPort: 0, toId: 'out_height', toPort: 0 },
+    { id: 'e9', fromId: 'normal_from_height', fromPort: 0, toId: 'out_normal', toPort: 0 },
+    { id: 'e11', fromId: 'edge_main', fromPort: 0, toId: 'out_rough', toPort: 0 },
+    { id: 'e12', fromId: 'base_color', fromPort: 0, toId: 'out_base', toPort: 0 }
   ],
   frames: [
-    { id: 'fr_shape', x: 12, y: 30, width: 940, height: 430, label: 'Shape Build', color: '#4d78bc' },
-    { id: 'fr_surface', x: 12, y: 480, width: 940, height: 290, label: 'Surface Micro', color: '#2f9e7f' },
-    { id: 'fr_outputs', x: 980, y: 120, width: 1030, height: 640, label: 'Output Prep', color: '#a97b2c' }
+    { id: 'fr_outputs', x: 760, y: 40, width: 320, height: 240, label: 'Outputs', color: '#4d78bc' }
   ]
 };
 
@@ -244,8 +218,10 @@ function isSubgraphCapableType(type: string): boolean {
 }
 
 export default function App() {
-  const engine = useRef(new GraphEngine(INIT_DATA));
-  const tex = useRef(new TextureEngine(INIT_DATA));
+  const engine = useRef<GraphEngine | null>(null);
+  const tex = useRef<TextureEngine | null>(null);
+  if (!engine.current) engine.current = new GraphEngine(INIT_DATA);
+  if (!tex.current) tex.current = new TextureEngine(INIT_DATA);
   const [graph, setGraph] = useState<GraphData>(engine.current.serialize());
   const graphRef = useRef<GraphData>(graph);
   
@@ -306,6 +282,30 @@ export default function App() {
   const lastUiCommitMsRef = useRef(0);
 
   const { root, floating, setActiveTab, resetLayout, addView, savePreset, loadPreset, getPresetNames } = useWorkspace();
+  const { hasGraphTab, has2DPreviewTab, has3DPreviewTab } = useMemo(() => {
+    const panels = [...collectPanels(root), ...floating.map((fp) => fp.panel)];
+    let nextHasGraphTab = false;
+    let nextHas2DPreviewTab = false;
+    let nextHas3DPreviewTab = false;
+
+    for (const panel of panels) {
+      for (const tab of panel.tabs) {
+        if (tab.type === 'graph') nextHasGraphTab = true;
+        if (tab.type === 'preview') nextHas2DPreviewTab = true;
+        if (tab.type === 'preview3d') nextHas3DPreviewTab = true;
+        if (nextHasGraphTab && nextHas2DPreviewTab && nextHas3DPreviewTab) break;
+      }
+      if (nextHasGraphTab && nextHas2DPreviewTab && nextHas3DPreviewTab) break;
+    }
+
+    return {
+      hasGraphTab: nextHasGraphTab,
+      has2DPreviewTab: nextHas2DPreviewTab,
+      has3DPreviewTab: nextHas3DPreviewTab,
+    };
+  }, [floating, root]);
+  const shouldRenderNodePreviews = hasGraphTab;
+  const shouldRenderOutputSurfaces = has2DPreviewTab || has3DPreviewTab;
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<GraphContextMenuRequest | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -434,6 +434,14 @@ export default function App() {
     if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
     interactTimerRef.current = window.setTimeout(() => setInteracting(false), INTERACT_DEBOUNCE);
   }, []);
+
+  const onCanvasInteractionStart = useCallback(() => {
+    markInteracting();
+  }, [markInteracting]);
+
+  const onCanvasInteractionEnd = useCallback(() => {
+    markInteracting();
+  }, [markInteracting]);
 
   const onMove = useCallback((id: string, pos: { x: number; y: number }) => {
     markInteracting();
@@ -1412,10 +1420,9 @@ export default function App() {
     if (node.type === 'output') return { port: outputPreviewPort, label: 'Output', portLabel: outputPreviewChannel };
     let bestPort = 0;
     if (def.outputs.length > 1) {
-      const connectedPorts = graph.edges
-        .filter(e => e.fromId === effectiveId)
-        .map(e => e.fromPort);
-      if (connectedPorts.length > 0) bestPort = Math.max(...connectedPorts);
+      for (const edge of graph.edges) {
+        if (edge.fromId === effectiveId && edge.fromPort > bestPort) bestPort = edge.fromPort;
+      }
     }
     const portLabel = def.outputs[bestPort]?.label || `Out #${bestPort}`;
     return { nodeId: effectiveId, port: bestPort, label: def.label, portLabel };
@@ -1429,6 +1436,7 @@ export default function App() {
   }, [previewTarget.nodeId, previewTarget.port, outputPreviewChannel]);
 
   useEffect(() => {
+    if (!has2DPreviewTab) return;
     let cancelled = false;
     if (compileDebounceTimerRef.current) {
       window.clearTimeout(compileDebounceTimerRef.current);
@@ -1541,27 +1549,43 @@ export default function App() {
     previewOutputChannel,
     outputAffectingSig,
     interacting,
+    has2DPreviewTab,
     buildCompileBacktest,
     reportCompileIssue,
     setPreviewPending,
   ]);
 
   useEffect(() => {
-    if (interacting || chaosMode || previewWorkPending) return;
+    if (!shouldRenderNodePreviews || interacting || chaosMode || previewWorkPending) return;
     if (thumbnailBlockedUntil > performance.now()) return;
     let disposed = false;
     const startSig = outputAffectingSig;
     const snapshot = graphRef.current;
     const MAX_PREVIEW_NODES = 40;
     const nodeById = new Map(snapshot.nodes.map((n) => [n.id, n]));
+    const edgesByFromNode = new Map<string, number[]>();
+    for (const edge of snapshot.edges) {
+      const next = edgesByFromNode.get(edge.fromId);
+      if (next) next.push(edge.fromPort);
+      else edgesByFromNode.set(edge.fromId, [edge.fromPort]);
+    }
     const plan = tex.current.getPlan();
     const dirtyIds = plan ? getDirtyNodes(plan) : [];
     const pinnedIds = [selectedNodeId, pinnedPreviewNodeId].filter((id): id is string => !!id);
     const outputIds = snapshot.nodes.filter((n) => isOutputNodeType(n.type)).map((n) => n.id);
-    const priorityIds = Array.from(new Set([...pinnedIds, ...outputIds, ...dirtyIds]));
+    const priorityIds: string[] = [];
+    const prioritySet = new Set<string>();
+    const addPriorityId = (id: string | null | undefined) => {
+      if (!id || prioritySet.has(id)) return;
+      prioritySet.add(id);
+      priorityIds.push(id);
+    };
+    pinnedIds.forEach(addPriorityId);
+    outputIds.forEach(addPriorityId);
+    dirtyIds.forEach(addPriorityId);
     const restIds = snapshot.nodes
       .map((n) => n.id)
-      .filter((id) => !priorityIds.includes(id));
+      .filter((id) => !prioritySet.has(id));
     let orderedIds = priorityIds;
     const remaining = Math.max(0, MAX_PREVIEW_NODES - priorityIds.length);
     if (remaining > 0 && restIds.length > 0) {
@@ -1600,15 +1624,13 @@ export default function App() {
       return 'baseColor';
     })();
     const getNodePreviewPort = (nodeId: string): number => {
-      const node = snapshot.nodes.find((n) => n.id === nodeId);
+      const node = nodeById.get(nodeId);
       if (!node) return 0;
       const def = NODE_REGISTRY[node.type];
       if (!def || def.outputs.length <= 1) return 0;
 
-      const connectedPorts = snapshot.edges
-        .filter((e) => e.fromId === nodeId)
-        .map((e) => e.fromPort);
-      if (connectedPorts.length > 0) return Math.max(...connectedPorts);
+      const connectedPorts = edgesByFromNode.get(nodeId);
+      if (connectedPorts && connectedPorts.length > 0) return Math.max(...connectedPorts);
 
       // Split nodes are most useful to preview as XYZ when no output is connected yet.
       if (node.type === 'split' && def.outputs.length > 4) return 4;
@@ -1705,6 +1727,7 @@ export default function App() {
     };
   }, [
     outputAffectingSig,
+    shouldRenderNodePreviews,
     selectedNodeId,
     pinnedPreviewNodeId,
     interacting,
@@ -1717,7 +1740,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
-    if (interacting || chaosMode || previewWorkPending) return;
+    if (!shouldRenderOutputSurfaces || interacting || chaosMode || previewWorkPending) return;
     let disposed = false;
     const snapshot = graphRef.current;
     const size = Math.max(128, Math.min(patternSize, 1024));
@@ -1805,6 +1828,7 @@ export default function App() {
     };
   }, [
     outputAffectingSig,
+    shouldRenderOutputSurfaces,
     rawMode,
     patternSize,
     interacting,
@@ -1923,6 +1947,8 @@ export default function App() {
     onSelectionChange: setSelectedNodeId,
     onCanvasClick: closeTransientUi,
     onRequestContextMenu: openContextMenu,
+    onCanvasInteractionStart,
+    onCanvasInteractionEnd,
     nodePreviews, outputPreviewSurfaces, nodeTimings,
     graphViewCommandNonce,
     graphViewCommandType,
@@ -1955,7 +1981,7 @@ export default function App() {
     onOpenAtomNode,
   }), [
     graph, selectedNodeId, onMove, onMoveFrame, onResizeFrame, onDeleteFrame, onAddFrameAt, onUpdateFrame, onDeleteEdge, onConnect, onUpdateParam, onAddNode, onDeleteNode,
-    closeTransientUi, openContextMenu, nodePreviews, outputPreviewSurfaces, nodeTimings, graphViewCommandNonce, graphViewCommandType,
+    closeTransientUi, openContextMenu, onCanvasInteractionStart, onCanvasInteractionEnd, nodePreviews, outputPreviewSurfaces, nodeTimings, graphViewCommandNonce, graphViewCommandType,
     previewShader, codeShader, compileError, patternSize, previewResolution,
     previewTarget, previewResScale, interacting, pinnedPreviewNodeId,
     previewFrameBudgetMs, performanceMode, viewportQuality, rendererPerf, rendererPerfP95, rendererPerfP50,
@@ -2033,7 +2059,7 @@ export default function App() {
           <div style={dividerStyle} />
           <span style={labelStyle}>SIZE</span>
           <select value={patternSize} onChange={e => onSetPatternSize(parseInt(e.target.value, 10))} className="nt-select">
-            {[256, 512, 1024, 2048, 4096].map(s => <option key={s} value={s}>{s}</option>)}
+            {[256, 512, 1024, 2048].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <div style={dividerStyle} />
           <button onClick={onExport} className="nt-btn">EXPORT</button>
@@ -2156,9 +2182,25 @@ function uniformValueKey(value: any): string {
 }
 
 function buildThumbnailKey(compiled: CompiledShader, size: number, context = ''): string {
-  const entries = Object.entries(compiled.uniformBindings)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, binding]) => `${name}:${uniformValueKey(binding.value)}`);
+  const entries: string[] = [];
+  if (compiled.uniformLayout && compiled.uniformLayout.length > 0) {
+    for (const entry of compiled.uniformLayout) {
+      const binding = compiled.uniformBindings[entry.name];
+      if (!binding) continue;
+      entries.push(`${entry.name}:${uniformValueKey(binding.value)}`);
+    }
+  } else {
+    for (const uniform of compiled.uniforms) {
+      const binding = compiled.uniformBindings[uniform.name];
+      if (!binding) continue;
+      entries.push(`${uniform.name}:${uniformValueKey(binding.value)}`);
+    }
+    if (entries.length === 0) {
+      Object.entries(compiled.uniformBindings)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([name, binding]) => entries.push(`${name}:${uniformValueKey(binding.value)}`));
+    }
+  }
   return `${size}|${context}|${compiled.hash}|${compiled.vertex.length}|${compiled.fragment.length}|${entries.join('|')}`;
 }
 
@@ -2190,9 +2232,22 @@ function renderShaderToSharedCanvas(compiled: CompiledShader, size: number): HTM
   }
 
   const uniforms: any = {};
-  Object.entries(compiled.uniformBindings).forEach(([key, binding]) => {
-    uniforms[key] = { value: binding.value };
-  });
+  if (compiled.uniformLayout && compiled.uniformLayout.length > 0) {
+    for (const entry of compiled.uniformLayout) {
+      const binding = compiled.uniformBindings[entry.name];
+      if (binding) uniforms[entry.name] = { value: binding.value };
+    }
+  } else {
+    for (const uniform of compiled.uniforms) {
+      const binding = compiled.uniformBindings[uniform.name];
+      if (binding) uniforms[uniform.name] = { value: binding.value };
+    }
+    if (Object.keys(uniforms).length === 0) {
+      Object.entries(compiled.uniformBindings).forEach(([key, binding]) => {
+        uniforms[key] = { value: binding.value };
+      });
+    }
+  }
   uniforms.u_time = { value: 0 };
   uniforms.u_resolution = { value: [size, size] };
   uniforms.u_preview_offset = { value: [0, 0] };

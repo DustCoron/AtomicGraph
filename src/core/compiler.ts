@@ -558,7 +558,17 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
   private asFloat(expr: Expr, nodeType: string, context: string): string {
     if (expr.type === 'float') return expr.code;
     this.warnings.add(`Implicit cast at node ${nodeType}: ${expr.type} -> float (${context})`);
-    return `${expr.code}.x`;
+    if (expr.type === 'vec2' || expr.type === 'vec3' || expr.type === 'vec4') {
+      return `(${expr.code}).x`;
+    }
+    return `(${expr.code})`;
+  }
+
+  private asVec4(expr: Expr): string {
+    if (expr.type === 'vec4') return expr.code;
+    if (expr.type === 'vec3') return this.v4(`${expr.code}.x, ${expr.code}.y, ${expr.code}.z, 1.0`);
+    if (expr.type === 'vec2') return this.v4(`${expr.code}.x, ${expr.code}.y, 0.0, 1.0`);
+    return this.v4(`${expr.code}, ${expr.code}, ${expr.code}, 1.0`);
   }
 
   private sanitizeAtomSubgraph(value: any): GraphData | null {
@@ -694,12 +704,13 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
     const fnName = `fn_${nodeId.replace(/[^a-zA-Z0-9]/g, '_')}_${outputPort}`;
 
     if (node.type === 'split') {
-      const inpRes = this.getSource(nodeId, 0);
+      const inpRes = this.getSource(nodeId, 0, 'uv', this.W ? 'vec4f(0.0)' : 'vec4(0.0)', 'vec4');
+      const vecRes = this.asVec4(inpRes);
       if (outputPort === 4) {
-        return { code: `(${inpRes.code}).xyz`, type: 'vec3', atoms: inpRes.atoms ? new Set(inpRes.atoms) : undefined };
+        return { code: `(${vecRes}).xyz`, type: 'vec3', atoms: inpRes.atoms ? new Set(inpRes.atoms) : undefined };
       }
       const swizzle = ['x', 'y', 'z', 'w'][outputPort] ?? 'x';
-      return { code: `(${inpRes.code}).${swizzle}`, type: 'float', atoms: inpRes.atoms ? new Set(inpRes.atoms) : undefined };
+      return { code: `(${vecRes}).${swizzle}`, type: 'float', atoms: inpRes.atoms ? new Set(inpRes.atoms) : undefined };
     }
 
     this.funcs.set(cacheKey, fnName);
@@ -1418,7 +1429,9 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
 
   private toGLSLType(type: UniformType): string {
     if (type === 'float') return 'float';
-    if (type === 'int') return 'int';
+    // Preview/export GLSL treats numeric params as float math inputs.
+    // Declaring "int" uniforms here causes mixed-type shader code and black previews.
+    if (type === 'int') return 'float';
     if (type === 'bool') return 'bool';
     if (type === 'vec2') return 'vec2';
     if (type === 'vec3') return 'vec3';
