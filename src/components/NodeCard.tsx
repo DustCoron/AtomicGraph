@@ -286,7 +286,9 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
             border: "1px solid #2a2e3a",
             background: '#090d16',
             overflow: 'hidden',
-            boxShadow: 'inset 0 0 0 1px #ffffff08'
+            boxShadow: 'inset 0 0 0 1px #ffffff08',
+            display: 'grid',
+            placeItems: 'center',
           }}
         >
           {previewUrl ? (
@@ -294,10 +296,10 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
               src={previewUrl}
               alt={`${def.label} preview`}
               draggable={false}
-              style={{ width: '100%', height: '100%', display: 'block', imageRendering: 'pixelated', userSelect: 'none', pointerEvents: 'none' }}
+              style={{ width: PREVIEW_SIZE, height: PREVIEW_SIZE, display: 'block', imageRendering: 'pixelated', userSelect: 'none', pointerEvents: 'none' }}
             />
           ) : (
-            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, color: '#4a5673', letterSpacing: 0.6 }}>
+            <div style={{ width: PREVIEW_SIZE, height: PREVIEW_SIZE, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, color: '#4a5673', letterSpacing: 0.6 }}>
               {PREVIEW_SIZE}x{PREVIEW_SIZE}
             </div>
           )}

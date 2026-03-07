@@ -27,7 +27,7 @@ export interface ViewportPerfSample {
 
 export interface ViewportQualityState {
   scale: 1 | 0.75 | 0.5;
-  reason: 'initial' | 'adaptive_down' | 'adaptive_up' | 'interactive';
+  reason: 'initial' | 'adaptive_down' | 'adaptive_up' | 'interactive' | 'resize_recover';
   last_change_at: number;
 }
 

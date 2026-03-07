@@ -6,6 +6,7 @@ import { ExecutionPlan, buildPlan } from './plan';
 import { Compiler, CompiledShader, COMPILER_BUILD, ShaderBackend } from './compiler';
 import { OutputChannel } from './output';
 import { UniformBinding } from './bindings';
+import type { WgslVariant } from '../shaders/compiled';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -17,6 +18,7 @@ export interface CompileRequest {
   targetNodeId?: string;
   targetPort?: number;
   outputChannel?: OutputChannel;
+  wgslVariant?: WgslVariant;
 }
 
 export interface CompileResult {
@@ -287,8 +289,9 @@ export class TextureEngine {
     const port = req.targetPort ?? 0;
     const channel = req.outputChannel ?? 'baseColor';
     const readable = req.readable ?? true;
+    const wgslVariant = req.wgslVariant ?? 'hq';
 
-    const cacheKey = `${this.plan?.hash}|${this._compilerBuild}|${target}:${port}|${channel}|${readable}`;
+    const cacheKey = `${this.plan?.hash}|${this._compilerBuild}|${target}:${port}|${channel}|${readable}|wgsl:${wgslVariant}`;
     const cached = this.shaderCache.get(cacheKey);
     if (cached) {
       return {
@@ -301,7 +304,7 @@ export class TextureEngine {
 
     const nodeOpts = req.targetNodeId ? { nodeId: req.targetNodeId, nodeOutputPort: port } : {};
     const glsl = new Compiler(gd).compile({ backend: 'glsl', readable, outputChannel: channel, ...nodeOpts });
-    const wgsl = new Compiler(gd).compile({ backend: 'wgsl', readable, outputChannel: channel, ...nodeOpts });
+    const wgsl = new Compiler(gd).compile({ backend: 'wgsl', readable, outputChannel: channel, wgslVariant, ...nodeOpts });
 
     this.shaderCache.set(cacheKey, { glsl, wgsl });
 

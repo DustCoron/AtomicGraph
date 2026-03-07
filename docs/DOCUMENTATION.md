@@ -26,7 +26,8 @@ Important files:
 - `src/components/GraphEditor.tsx`: graph interaction and edge rendering
 - `src/components/NodeCard.tsx`: node UI, ports, parameter editors, thumbnails
 - `src/components/Viewport.tsx`: 2D preview
-- `src/components/Viewport3D.tsx`: 3D material preview
+- `src/components/Viewport3DBabylon.tsx`: primary Babylon.js 3D material preview
+- `src/components/Viewport3D.tsx`: Three.js compatibility fallback preview
 
 ## Node UI
 
@@ -73,12 +74,14 @@ When under load, non-critical work can be deferred to keep interaction responsiv
 
 ## 3D Preview
 
+Babylon.js is the primary 3D preview renderer. Three.js remains available as a compatibility fallback.
+
 3D preview supports:
-- BaseColor, Roughness, Normal, Height channel inputs
+- BaseColor, Roughness, Normal, Metallic, AO, and Height channel inputs
 - environment presets and custom HDR loading
-- environment rotation (slider + keyboard drag gesture)
-- wireframe overlay
-- optional POM mode
+- explicit environment rotation controls
+- wireframe inspection
+- displacement-based surface inspection for height review
 - screenshot export
 
 ## Logging and Monitoring

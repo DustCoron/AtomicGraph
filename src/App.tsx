@@ -28,6 +28,7 @@ import { GraphData, NodeData } from './core/types';
 import { appendAppLog, getAppLogs } from './core/logs';
 import { MonitorCheckResult, MonitorMode, MonitorSuiteRun, appendMonitorRun, buildMonitorRunId, clearMonitorRuns as clearMonitorRunsStore, getMonitorRuns } from './core/monitor';
 import { PerformanceMode, RendererPerfSample, ViewportPerfSample, ViewportQualityState, percentile } from './core/perf';
+import { PaintBrushParams } from './core/gpu-paint';
 import { Workspace } from './workspace/Workspace';
 import { useWorkspace } from './workspace/store';
 import { collectPanels } from './workspace/types';
@@ -35,13 +36,14 @@ import { AppContext, AppContextValue, OutputPreviewSurface, PreviewTargetInfo, r
 
 const INIT_DATA: GraphData = {
   schemaVersion: 1,
-  resolution: 512,
+  resolution: 256,
   nodes: [
     { id: 'out_base', type: 'output_baseColor', x: 1664, y: 104, params: {} },
     { id: 'out_rough', type: 'output_roughness', x: 1664, y: 304, params: {} },
     { id: 'out_normal', type: 'output_normal', x: 1664, y: 504, params: {} },
     { id: 'out_metal', type: 'output_metallic', x: 1664, y: 704, params: {} },
-    { id: 'out_height', type: 'output_height', x: 1664, y: 904, params: {} },
+    { id: 'out_ao', type: 'output_ao', x: 1664, y: 904, params: {} },
+    { id: 'out_height', type: 'output_height', x: 1664, y: 1104, params: {} },
 
     { id: 'base_color', type: 'uniform_color', x: 80, y: 90, params: { r: 0.16, g: 0.26, b: 0.36 } },
     { id: 'spots_main', type: 'bnw_spots2_v2', x: 80, y: 380, params: {
@@ -68,21 +70,47 @@ const INIT_DATA: GraphData = {
     { id: 'e9', fromId: 'levels_main', fromPort: 0, toId: 'out_height', toPort: 0 },
     { id: 'e10', fromId: 'highpass_rough', fromPort: 0, toId: 'out_rough', toPort: 0 },
     { id: 'e11', fromId: 'levels_main', fromPort: 0, toId: 'out_metal', toPort: 0 },
-    { id: 'e12', fromId: 'base_color', fromPort: 0, toId: 'out_base', toPort: 0 }
+    { id: 'e12', fromId: 'base_color', fromPort: 0, toId: 'out_base', toPort: 0 },
+    { id: 'e13', fromId: 'highpass_rough', fromPort: 0, toId: 'out_ao', toPort: 0 }
   ],
   frames: [
-    { id: 'fr_outputs', x: 1608, y: 52, width: 344, height: 972, label: 'Outputs', color: '#4d78bc' }
+    { id: 'fr_outputs', x: 1608, y: 52, width: 344, height: 1172, label: 'Outputs', color: '#4d78bc' }
   ]
 };
 
 const MAX_HISTORY = 100;
 const NODE_THUMB_SIZE = 96;
+const NODE_THUMB_SIZE_ZOOMED_OUT = 64;
+const NODE_THUMB_SIZE_ZOOMED_IN = 512;
+const NODE_THUMB_DOWNSCALE_ZOOM = 0.6;
+const NODE_THUMB_UPSCALE_ZOOM = 1.85;
 const DEFAULT_GRID_SNAP = 32;
 const AUTOSAVE_KEY = 'atomicgraph.autosave.v1';
+const PREVIEW_HIDPI_KEY = 'atomicgraph.preview.hidpi';
+const PREVIEW_RENDER_ENABLED_KEY = 'atomicgraph.preview.render.enabled';
+const PREVIEW_3D_RENDERER_KEY = 'atomicgraph.preview3d.renderer';
+const PREVIEW_PAINT_ENABLED_KEY = 'atomicgraph.preview.paint.enabled';
+const PREVIEW_PAINT_RADIUS_KEY = 'atomicgraph.preview.paint.radius';
+const PREVIEW_PAINT_COLOR_KEY = 'atomicgraph.preview.paint.color';
+const PREVIEW_WARMUP_RESOLUTION = 256;
+const PREVIEW_RESOLUTION_STEPS = [256, 512, 1024, 2048] as const;
+const PREVIEW_RESOLUTION_PROMOTION_MS = 1600;
+const PREVIEW_GPU_BACKOFF_MS = 12000;
+const PREVIEW_GPU_HARD_BACKOFF_MS = 45000;
 const ENABLE_DEBUG_FUZZ_UI = false;
 const FRAME_COLORS = ['#4d78bc', '#2f9e7f', '#a97b2c', '#b1597a', '#6b66c7'];
 const snapToGrid = (value: number, gridSize: number): number => Math.round(value / gridSize) * gridSize;
 const cloneGraph = (data: GraphData): GraphData => JSON.parse(JSON.stringify(data));
+
+function getNextPreviewResolutionStep(current: number, target: number): number {
+  if (target <= current) return target;
+  const nextStep = PREVIEW_RESOLUTION_STEPS.find((step) => step > current && step <= target);
+  return nextStep ?? target;
+}
+
+function clampSafePreviewResolution(target: number): number {
+  return target > PREVIEW_WARMUP_RESOLUTION ? PREVIEW_WARMUP_RESOLUTION : target;
+}
 
 function buildNodePreviewTemplateGraph(resolution: number): GraphData {
   const nodes: NodeData[] = [];
@@ -264,7 +292,8 @@ function buildAutoLayoutDemoGraph(): GraphData {
       { id: 'out_rough', type: 'output_roughness', x: 450, y: 180, params: {} },
       { id: 'out_normal', type: 'output_normal', x: 470, y: 260, params: {} },
       { id: 'out_metal', type: 'output_metallic', x: 500, y: 140, params: {} },
-      { id: 'out_height', type: 'output_height', x: 520, y: 220, params: {} },
+      { id: 'out_ao', type: 'output_ao', x: 520, y: 300, params: {} },
+      { id: 'out_height', type: 'output_height', x: 540, y: 220, params: {} },
     ],
     edges: [
       { id: 'd1', fromId: 'n_noise_a', fromPort: 0, toId: 'n_transform_a', toPort: 0 },
@@ -287,9 +316,88 @@ function buildAutoLayoutDemoGraph(): GraphData {
       { id: 'd11', fromId: 'n_vec_warp', fromPort: 0, toId: 'n_edge', toPort: 0 },
       { id: 'd12', fromId: 'n_base', fromPort: 0, toId: 'out_base', toPort: 0 },
       { id: 'd13', fromId: 'n_levels_h', fromPort: 0, toId: 'out_metal', toPort: 0 },
+      { id: 'd14', fromId: 'n_edge', fromPort: 0, toId: 'out_ao', toPort: 0 },
     ],
     frames: [
-      { id: 'demo_out', x: 420, y: 70, width: 340, height: 260, label: 'Outputs', color: '#4d78bc' },
+      { id: 'demo_out', x: 420, y: 70, width: 360, height: 340, label: 'Outputs', color: '#4d78bc' },
+    ],
+  };
+}
+
+function buildDirtStoneDemoGraph(): GraphData {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    resolution: 512,
+    nodes: [
+      { id: 'c_dirt_dark', type: 'constant', x: 110, y: 80, params: { value: 0.23 } },
+      { id: 'c_stone_light', type: 'constant', x: 110, y: 120, params: { value: 0.58 } },
+      { id: 'c_rough_dirt', type: 'constant', x: 110, y: 180, params: { value: 0.88 } },
+      { id: 'c_rough_stone', type: 'constant', x: 110, y: 220, params: { value: 0.62 } },
+      { id: 'c_metal', type: 'constant', x: 110, y: 280, params: { value: 0.0 } },
+
+      { id: 'n_soil_macro', type: 'noise', x: 240, y: 70, params: { scale: 2.8, octaves: 3, seed: 410, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
+      { id: 'n_soil_range', type: 'histogram_range', x: 390, y: 70, params: { inMin: 0.22, inMax: 0.84, outMin: 0.18, outMax: 0.9 } },
+
+      { id: 'n_cells', type: 'voronoi', x: 240, y: 270, params: { scale: 7, jitter: 0.58, seed: 77, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
+      { id: 'n_stone_mask', type: 'levels', x: 390, y: 270, params: { inMin: 0.36, inMax: 0.82, gamma: 0.82 } },
+      { id: 'n_stone_soften', type: 'histogram_range', x: 540, y: 270, params: { inMin: 0.08, inMax: 0.94, outMin: 0.0, outMax: 0.86 } },
+
+      { id: 'n_height_merge', type: 'blend', x: 690, y: 190, params: { mode: 'add', opacity: 0.3 } },
+      { id: 'n_height_finish', type: 'curve', x: 840, y: 190, params: { lift: 0.0, gamma: 0.96, gain: 1.0 } },
+
+      { id: 'n_base_tone', type: 'lerp', x: 690, y: 70, params: { t: 0.5 } },
+      { id: 'n_base_variation', type: 'blend', x: 840, y: 70, params: { mode: 'multiply', opacity: 0.14 } },
+      { id: 'n_rough_tone', type: 'lerp', x: 690, y: 130, params: { t: 0.5 } },
+      { id: 'n_ao_invert', type: 'oneminus', x: 690, y: 300, params: {} },
+      { id: 'n_ao_levels', type: 'levels', x: 840, y: 300, params: { inMin: 0.16, inMax: 0.88, gamma: 1.04 } },
+
+      { id: 'n_normal', type: 'height_to_normal', x: 1010, y: 190, params: { strength: 1.35, radius: 1.0, flipY: false } },
+      { id: 'n_normal_fix', type: 'normal_normalize', x: 1150, y: 190, params: { flipY: false } },
+
+      { id: 'out_base', type: 'output_baseColor', x: 1150, y: 70, params: {} },
+      { id: 'out_rough', type: 'output_roughness', x: 1150, y: 130, params: {} },
+      { id: 'out_metal', type: 'output_metallic', x: 1150, y: 190, params: {} },
+      { id: 'out_height', type: 'output_height', x: 1320, y: 190, params: {} },
+      { id: 'out_normal', type: 'output_normal', x: 1320, y: 260, params: {} },
+      { id: 'out_ao', type: 'output_ao', x: 1150, y: 300, params: {} },
+    ],
+    edges: [
+      { id: 'e1', fromId: 'n_soil_macro', fromPort: 0, toId: 'n_soil_range', toPort: 0 },
+
+      { id: 'e2', fromId: 'n_cells', fromPort: 0, toId: 'n_stone_mask', toPort: 0 },
+      { id: 'e3', fromId: 'n_stone_mask', fromPort: 0, toId: 'n_stone_soften', toPort: 0 },
+
+      { id: 'e4', fromId: 'n_soil_range', fromPort: 0, toId: 'n_height_merge', toPort: 0 },
+      { id: 'e5', fromId: 'n_stone_soften', fromPort: 0, toId: 'n_height_merge', toPort: 1 },
+      { id: 'e6', fromId: 'n_height_merge', fromPort: 0, toId: 'n_height_finish', toPort: 0 },
+      { id: 'e7', fromId: 'n_height_finish', fromPort: 0, toId: 'n_normal', toPort: 0 },
+      { id: 'e8', fromId: 'n_normal', fromPort: 0, toId: 'n_normal_fix', toPort: 0 },
+
+      { id: 'e9', fromId: 'c_dirt_dark', fromPort: 0, toId: 'n_base_tone', toPort: 0 },
+      { id: 'e10', fromId: 'c_stone_light', fromPort: 0, toId: 'n_base_tone', toPort: 1 },
+      { id: 'e11', fromId: 'n_stone_mask', fromPort: 0, toId: 'n_base_tone', toPort: 2 },
+      { id: 'e12', fromId: 'n_base_tone', fromPort: 0, toId: 'n_base_variation', toPort: 0 },
+      { id: 'e13', fromId: 'n_soil_range', fromPort: 0, toId: 'n_base_variation', toPort: 1 },
+
+      { id: 'e14', fromId: 'c_rough_dirt', fromPort: 0, toId: 'n_rough_tone', toPort: 0 },
+      { id: 'e15', fromId: 'c_rough_stone', fromPort: 0, toId: 'n_rough_tone', toPort: 1 },
+      { id: 'e16', fromId: 'n_stone_mask', fromPort: 0, toId: 'n_rough_tone', toPort: 2 },
+
+      { id: 'e17', fromId: 'n_stone_soften', fromPort: 0, toId: 'n_ao_invert', toPort: 0 },
+      { id: 'e18', fromId: 'n_ao_invert', fromPort: 0, toId: 'n_ao_levels', toPort: 0 },
+
+      { id: 'e19', fromId: 'n_base_variation', fromPort: 0, toId: 'out_base', toPort: 0 },
+      { id: 'e20', fromId: 'n_rough_tone', fromPort: 0, toId: 'out_rough', toPort: 0 },
+      { id: 'e21', fromId: 'c_metal', fromPort: 0, toId: 'out_metal', toPort: 0 },
+      { id: 'e22', fromId: 'n_height_finish', fromPort: 0, toId: 'out_height', toPort: 0 },
+      { id: 'e23', fromId: 'n_normal_fix', fromPort: 0, toId: 'out_normal', toPort: 0 },
+      { id: 'e24', fromId: 'n_ao_levels', fromPort: 0, toId: 'out_ao', toPort: 0 },
+    ],
+    frames: [
+      { id: 'soil_frame', x: 200, y: 30, width: 280, height: 120, label: 'Soil Base', color: '#5a4f3f' },
+      { id: 'stone_frame', x: 200, y: 230, width: 420, height: 120, label: 'Stone Masking', color: '#53565a' },
+      { id: 'material_frame', x: 650, y: 30, width: 260, height: 330, label: 'Material and Height', color: '#4d564b' },
+      { id: 'final_frame', x: 1110, y: 30, width: 270, height: 320, label: 'Final Channels', color: '#584a4a' },
     ],
   };
 }
@@ -300,8 +408,15 @@ function resolveThumbnailOutputChannel(snapshot: GraphData): OutputChannel {
   if (mapping.baseColor) return 'baseColor';
   if (mapping.normal) return 'normal';
   if (mapping.roughness) return 'roughness';
+  if (mapping.ao) return 'ao';
   if (mapping.metallic) return 'metallic';
   return 'baseColor';
+}
+
+function resolveNodePreviewTextureSize(zoom: number): number {
+  if (zoom >= NODE_THUMB_UPSCALE_ZOOM) return NODE_THUMB_SIZE_ZOOMED_IN;
+  if (zoom <= NODE_THUMB_DOWNSCALE_ZOOM) return NODE_THUMB_SIZE_ZOOMED_OUT;
+  return NODE_THUMB_SIZE;
 }
 
 function buildPreviewRequestMeta(node: NodeData, previewPort: number, fallbackOutputChannel: OutputChannel): {
@@ -324,20 +439,48 @@ function buildPreviewRequestMeta(node: NodeData, previewPort: number, fallbackOu
   };
 }
 
+function hexToRgb01(hex: string): [number, number, number] {
+  const normalized = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : '#ff8844';
+  const r = parseInt(normalized.slice(1, 3), 16) / 255;
+  const g = parseInt(normalized.slice(3, 5), 16) / 255;
+  const b = parseInt(normalized.slice(5, 7), 16) / 255;
+  return [r, g, b];
+}
+
 export default function App() {
   const engine = useRef<GraphEngine | null>(null);
   const tex = useRef<TextureEngine | null>(null);
   if (!engine.current) engine.current = new GraphEngine(INIT_DATA);
   if (!tex.current) tex.current = new TextureEngine(INIT_DATA);
-  const [graph, setGraph] = useState<GraphData>(engine.current.serialize());
+  const initialRequestedPatternSizeRef = useRef<number>(engine.current.resolution || 512);
+  const initialLivePatternSizeRef = useRef<number>(
+    initialRequestedPatternSizeRef.current > PREVIEW_WARMUP_RESOLUTION
+      ? PREVIEW_WARMUP_RESOLUTION
+      : initialRequestedPatternSizeRef.current
+  );
+  const initialResolutionBootstrappedRef = useRef(false);
+  if (!initialResolutionBootstrappedRef.current) {
+    initialResolutionBootstrappedRef.current = true;
+    if (engine.current.resolution !== initialLivePatternSizeRef.current) engine.current.setResolution(initialLivePatternSizeRef.current);
+    if (tex.current.getResolution() !== initialLivePatternSizeRef.current) tex.current.setResolution(initialLivePatternSizeRef.current);
+  }
+  const [graph, setGraph] = useState<GraphData>(() => {
+    const snapshot = engine.current!.serialize();
+    return snapshot.resolution === initialLivePatternSizeRef.current ? snapshot : { ...snapshot, resolution: initialLivePatternSizeRef.current };
+  });
   const graphRef = useRef<GraphData>(graph);
   
   const tile = true;
   const [rawMode, setRawMode] = useState(false);
-  const [patternSize, setPatternSize] = useState<number>(engine.current.resolution || 512);
-  const previewResolution = useMemo(() => Math.min(patternSize, 1024), [patternSize]);
+  const [patternSize, setPatternSize] = useState<number>(initialRequestedPatternSizeRef.current);
+  const [activePatternSize, setActivePatternSize] = useState<number>(() => {
+    return initialLivePatternSizeRef.current;
+  });
+  const [patternSizePromoting, setPatternSizePromoting] = useState<boolean>(() => initialRequestedPatternSizeRef.current > PREVIEW_WARMUP_RESOLUTION);
+  const previewResolution = useMemo(() => Math.min(activePatternSize, 1024), [activePatternSize]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [graphZoomLevel, setGraphZoomLevel] = useState(1);
   const [visibleNodeIds, setVisibleNodeIds] = useState<string[]>([]);
   const [clipboard, setClipboard] = useState<NodeClipboard | null>(null);
   const paramClipboardRef = useRef<NodeParamClipboard | null>(null);
@@ -378,11 +521,19 @@ export default function App() {
   const [rendererPerfP50, setRendererPerfP50] = useState(0);
   const [rendererPerfP95, setRendererPerfP95] = useState(0);
   const [thumbnailDeferred, setThumbnailDeferred] = useState(false);
+  const [thumbnailStatusMessage, setThumbnailStatusMessage] = useState<string | null>(null);
   const [thumbnailBlockedUntil, setThumbnailBlockedUntil] = useState(0);
+  const [outputSurfacePending, setOutputSurfacePending] = useState(false);
+  const [gpuCooldownUntil, setGpuCooldownUntil] = useState(0);
+  const [gpuCooling, setGpuCooling] = useState(false);
+  const [gpuFailureCount, setGpuFailureCount] = useState(0);
+  const [gpuSafetyMessage, setGpuSafetyMessage] = useState<string | null>(null);
   const thumbnailBlockTimerRef = useRef(0);
+  const gpuCooldownTimerRef = useRef(0);
   const [previewWorkPending, setPreviewWorkPending] = useState(false);
   const [previewCompileWorkerReady, setPreviewCompileWorkerReady] = useState(false);
   const compileDebounceTimerRef = useRef(0);
+  const resolutionRampKeyRef = useRef('');
   const previewProgramKeyRef = useRef('');
   const previewRuntimeKeyRef = useRef('');
   const thumbnailRoundRobinRef = useRef(0);
@@ -422,11 +573,11 @@ export default function App() {
   }, [floating, root]);
   const shouldRenderNodePreviews = hasGraphTab;
   const shouldRenderOutputSurfaces = has3DPreviewTab;
+  const nodePreviewGpuUnavailable = !!thumbnailStatusMessage;
   const preview3dReady = useMemo(() => {
     if (!has3DPreviewTab) return false;
-    if (previewWorkPending || !!compileError) return false;
-    return nodePreviewWarmupDone || !shouldRenderNodePreviews;
-  }, [has3DPreviewTab, previewWorkPending, compileError, nodePreviewWarmupDone, shouldRenderNodePreviews]);
+    return nodePreviewWarmupDone || !shouldRenderNodePreviews || nodePreviewGpuUnavailable;
+  }, [has3DPreviewTab, nodePreviewWarmupDone, shouldRenderNodePreviews, nodePreviewGpuUnavailable]);
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<GraphContextMenuRequest | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -442,6 +593,67 @@ export default function App() {
     }
   });
   const [snapGridSize, setSnapGridSize] = useState<number>(DEFAULT_GRID_SNAP);
+  const [previewHiDpi, setPreviewHiDpi] = useState<boolean>(() => {
+    try {
+      const raw = window.localStorage.getItem(PREVIEW_HIDPI_KEY);
+      return raw == null ? true : raw === '1';
+    } catch {
+      return true;
+    }
+  });
+  const [previewRenderEnabled, setPreviewRenderEnabled] = useState<boolean>(() => {
+    try {
+      const raw = window.localStorage.getItem(PREVIEW_RENDER_ENABLED_KEY);
+      return raw == null ? true : raw === '1';
+    } catch {
+      return true;
+    }
+  });
+  const [preview3dRenderer, setPreview3dRenderer] = useState<'three' | 'babylon'>(() => {
+    try {
+      const raw = window.localStorage.getItem(PREVIEW_3D_RENDERER_KEY);
+      return raw === 'three' ? 'three' : 'babylon';
+    } catch {
+      return 'babylon';
+    }
+  });
+  const [previewPaintEnabled, setPreviewPaintEnabled] = useState<boolean>(() => {
+    try {
+      const raw = window.localStorage.getItem(PREVIEW_PAINT_ENABLED_KEY);
+      return raw == null ? false : raw === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [previewBrushRadius, setPreviewBrushRadius] = useState<number>(() => {
+    try {
+      const raw = window.localStorage.getItem(PREVIEW_PAINT_RADIUS_KEY);
+      const parsed = raw == null ? 18 : Number(raw);
+      return Number.isFinite(parsed) ? Math.max(1, Math.min(256, parsed)) : 18;
+    } catch {
+      return 18;
+    }
+  });
+  const [previewBrushColor, setPreviewBrushColor] = useState<string>(() => {
+    try {
+      const raw = window.localStorage.getItem(PREVIEW_PAINT_COLOR_KEY);
+      if (!raw) return '#ff8844';
+      return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#ff8844';
+    } catch {
+      return '#ff8844';
+    }
+  });
+  const previewPaintBrush = useMemo<PaintBrushParams>(() => {
+    const [r, g, b] = hexToRgb01(previewBrushColor);
+    return {
+      radius: Math.max(1, Math.min(256, previewBrushRadius)),
+      hardness: 0.8,
+      opacity: 1,
+      spacing: 0.35,
+      color: [r, g, b, 1],
+      jitter: 0.08,
+    };
+  }, [previewBrushColor, previewBrushRadius]);
   const [hasAutosave, setHasAutosave] = useState<boolean>(() => {
     try {
       return !!window.localStorage.getItem(AUTOSAVE_KEY);
@@ -529,6 +741,35 @@ export default function App() {
       }
     };
   }, [thumbnailBlockedUntil]);
+
+  useEffect(() => {
+    if (gpuCooldownTimerRef.current) {
+      window.clearTimeout(gpuCooldownTimerRef.current);
+      gpuCooldownTimerRef.current = 0;
+    }
+    if (gpuCooldownUntil <= 0) {
+      setGpuCooling(false);
+      return;
+    }
+    const remaining = Math.max(0, gpuCooldownUntil - performance.now());
+    if (remaining <= 1) {
+      setGpuCooldownUntil(0);
+      setGpuCooling(false);
+      return;
+    }
+    setGpuCooling(true);
+    gpuCooldownTimerRef.current = window.setTimeout(() => {
+      setGpuCooldownUntil(0);
+      setGpuCooling(false);
+      gpuCooldownTimerRef.current = 0;
+    }, remaining + 6);
+    return () => {
+      if (gpuCooldownTimerRef.current) {
+        window.clearTimeout(gpuCooldownTimerRef.current);
+        gpuCooldownTimerRef.current = 0;
+      }
+    };
+  }, [gpuCooldownUntil]);
 
   useEffect(() => {
     ensureBuiltinOperators();
@@ -628,6 +869,19 @@ export default function App() {
   }, [snapEnabled, snapGridSize]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(PREVIEW_HIDPI_KEY, previewHiDpi ? '1' : '0');
+      window.localStorage.setItem(PREVIEW_RENDER_ENABLED_KEY, previewRenderEnabled ? '1' : '0');
+      window.localStorage.setItem(PREVIEW_3D_RENDERER_KEY, preview3dRenderer);
+      window.localStorage.setItem(PREVIEW_PAINT_ENABLED_KEY, previewPaintEnabled ? '1' : '0');
+      window.localStorage.setItem(PREVIEW_PAINT_RADIUS_KEY, String(previewBrushRadius));
+      window.localStorage.setItem(PREVIEW_PAINT_COLOR_KEY, previewBrushColor);
+    } catch {
+      /* ignore localStorage errors */
+    }
+  }, [previewHiDpi, previewRenderEnabled, preview3dRenderer, previewPaintEnabled, previewBrushRadius, previewBrushColor]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
         const payload = {
@@ -669,9 +923,45 @@ export default function App() {
     historyRef.current.future = [];
   }, []);
 
-  const applyEngineGraph = useCallback((next: GraphData) => {
-    engine.current = new GraphEngine(next);
-    setGraph(next);
+  const applyLivePatternSize = useCallback((next: number) => {
+    const live = Math.max(128, next | 0);
+    if (tex.current.getResolution() !== live) tex.current.setResolution(live);
+    const current = graphRef.current;
+    const nextGraph = current.resolution === live ? current : { ...current, resolution: live };
+    engine.current.setResolution(live);
+    graphRef.current = nextGraph;
+    setActivePatternSize(live);
+    setGraph(nextGraph);
+  }, []);
+
+  const enterGpuSafetyBackoff = useCallback((reason: string, hard = false) => {
+    const now = performance.now();
+    const cooldownMs = hard ? PREVIEW_GPU_HARD_BACKOFF_MS : PREVIEW_GPU_BACKOFF_MS;
+    setGpuFailureCount((prev) => prev + 1);
+    setGpuSafetyMessage(reason);
+    setGpuCooldownUntil((prev) => Math.max(prev, now + cooldownMs));
+    setPatternSizePromoting(patternSize > PREVIEW_WARMUP_RESOLUTION);
+    setViewportQuality((prev) => ({ scale: 0.5, reason: 'adaptive_down', last_change_at: now }));
+    deferThumbnails(Math.max(cooldownMs, THUMBNAIL_RETRY_MS));
+    applyLivePatternSize(PREVIEW_WARMUP_RESOLUTION);
+  }, [applyLivePatternSize, deferThumbnails, patternSize]);
+
+  const handleViewportGpuFailure = useCallback((source: 'three' | 'babylon', reason: string, hard = false) => {
+    const message = `${source === 'three' ? 'Three' : 'Babylon'} GPU backoff: ${reason}`;
+    appendAppLog({ level: 'warn', source: 'preview3d', message, details: hard ? 'hard' : 'soft' });
+    enterGpuSafetyBackoff(message, hard);
+  }, [enterGpuSafetyBackoff]);
+
+  const applyEngineGraph = useCallback((next: GraphData, requestedResolution?: number) => {
+    const requested = Math.max(128, requestedResolution ?? next.resolution ?? 512);
+    const live = clampSafePreviewResolution(requested);
+    const staged = next.resolution === live ? next : { ...next, resolution: live };
+    engine.current = new GraphEngine(staged);
+    tex.current.setResolution(live);
+    graphRef.current = staged;
+    setActivePatternSize(live);
+    setPatternSizePromoting(requested > live);
+    setGraph(staged);
   }, []);
 
   const applyMutation = useCallback((mutate: (eng: GraphEngine) => boolean | void, withHistory = true) => {
@@ -686,8 +976,10 @@ export default function App() {
 
   const onSetPatternSize = useCallback((next: number) => {
     setPatternSize(next);
-    applyMutation(eng => { eng.setResolution(next); }, true);
-  }, [applyMutation]);
+    const live = clampSafePreviewResolution(next);
+    setPatternSizePromoting(next > live);
+    applyLivePatternSize(live);
+  }, [applyLivePatternSize]);
 
   const frameAllGraphView = useCallback(() => {
     setGraphViewCommandType('frame_all');
@@ -705,8 +997,8 @@ export default function App() {
       if (!raw) return;
       const parsed = JSON.parse(raw) as { graph?: GraphData; patternSize?: number; savedAt?: number };
       if (!parsed || !parsed.graph || !Array.isArray(parsed.graph.nodes) || !Array.isArray(parsed.graph.edges)) return;
-      applyEngineGraph(parsed.graph);
       const nextSize = parsed.patternSize ?? parsed.graph.resolution ?? 512;
+      applyEngineGraph(parsed.graph, nextSize);
       setPatternSize(nextSize);
       historyRef.current = { past: [], future: [] };
       setSelectedNodeId(null);
@@ -738,6 +1030,10 @@ export default function App() {
     ));
   }, []);
 
+  const onGraphZoomChange = useCallback((zoom: number) => {
+    setGraphZoomLevel((prev) => (Math.abs(prev - zoom) < 0.005 ? prev : zoom));
+  }, []);
+
   useEffect(() => {
     if (!selectedNodeId) {
       setSelectedNodeIds([]);
@@ -750,13 +1046,26 @@ export default function App() {
 
   const loadAutoLayoutDemo = useCallback(() => {
     const demo = buildAutoLayoutDemoGraph();
-    applyEngineGraph(demo);
-    setPatternSize(demo.resolution || 512);
+    const requested = demo.resolution || 512;
+    applyEngineGraph(demo, requested);
+    setPatternSize(requested);
     setSelectedNodeId(null);
     setSelectedNodeIds([]);
     historyRef.current = { past: [], future: [] };
     showAutoLayoutNotice('Demo DAG loaded. Run Auto Layout.', 'ok');
     appendAppLog({ level: 'info', source: 'layout', message: 'Auto-layout demo graph loaded' });
+  }, [applyEngineGraph, showAutoLayoutNotice]);
+
+  const loadDirtStoneDemo = useCallback(() => {
+    const demo = buildDirtStoneDemoGraph();
+    const requested = demo.resolution || 1024;
+    applyEngineGraph(demo, requested);
+    setPatternSize(requested);
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+    historyRef.current = { past: [], future: [] };
+    showAutoLayoutNotice('Dirt and stone material demo loaded for render testing.', 'ok');
+    appendAppLog({ level: 'info', source: 'graph', message: 'Dirt and stone material demo loaded' });
   }, [applyEngineGraph, showAutoLayoutNotice]);
 
   const getAutoLayout = useCallback(async () => {
@@ -911,13 +1220,17 @@ export default function App() {
   }, [addView, applyMutation, atomViewBindings, floating, root, setActiveTab]);
 
   const onSave = useCallback(() => {
-    const json = tex.current.serialize();
+    const saveGraph: GraphData = {
+      ...graphRef.current,
+      resolution: patternSize,
+    };
+    const json = JSON.stringify(saveGraph, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url; link.download = `project_v${SCHEMA_VERSION}_${Date.now()}.json`; link.click();
     URL.revokeObjectURL(url);
-  }, []);
+  }, [patternSize]);
 
   const onLoad = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
@@ -927,10 +1240,9 @@ export default function App() {
         const raw = JSON.parse(evt.target?.result as string);
         if (!raw.nodes || !raw.edges) throw new Error('Invalid project file');
         const gd = tex.current.load(raw);
-        engine.current = new GraphEngine(gd);
-        setGraph(gd);
-        setPatternSize(tex.current.getResolution());
-        engine.current.setResolution(tex.current.getResolution());
+        const requested = tex.current.getResolution();
+        setPatternSize(requested);
+        applyEngineGraph(gd, requested);
         historyRef.current = { past: [], future: [] };
         setSelectedNodeId(null);
       } catch (err: any) {
@@ -945,7 +1257,7 @@ export default function App() {
     };
     reader.readAsText(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, []);
+  }, [applyEngineGraph]);
 
   const copySelection = useCallback(() => {
     if (!selectedNodeId) return;
@@ -1054,8 +1366,9 @@ export default function App() {
     if (past.length === 0) return;
     const prev = past.pop()!;
     historyRef.current.future.unshift(cloneGraph(engine.current.serialize()));
-    applyEngineGraph(prev);
-    setPatternSize(prev.resolution || 512);
+    const requested = prev.resolution || 512;
+    applyEngineGraph(prev, requested);
+    setPatternSize(requested);
   }, [applyEngineGraph]);
 
   const redo = useCallback(() => {
@@ -1063,8 +1376,9 @@ export default function App() {
     if (future.length === 0) return;
     const next = future.shift()!;
     historyRef.current.past.push(cloneGraph(engine.current.serialize()));
-    applyEngineGraph(next);
-    setPatternSize(next.resolution || 512);
+    const requested = next.resolution || 512;
+    applyEngineGraph(next, requested);
+    setPatternSize(requested);
   }, [applyEngineGraph]);
 
   const addNodeAt = useCallback((type: string, graphX: number, graphY: number): string | null => {
@@ -1611,12 +1925,17 @@ export default function App() {
 
   const graphSignature = useMemo(() => buildCodeSignature(graph), [graph]);
   const outputAffectingSig = useMemo(() => buildOutputAffectingSignature(graph), [graph]);
+  const requestedResolutionSig = useMemo(() => buildOutputAffectingSignature({
+    ...graph,
+    resolution: patternSize,
+  }), [graph, patternSize]);
   const outputPreviewChannel = useMemo<OutputChannel>(() => {
     const mapping = resolveOutputChannels(graph);
     if (mapping.height) return 'height';
     if (mapping.baseColor) return 'baseColor';
     if (mapping.normal) return 'normal';
     if (mapping.roughness) return 'roughness';
+    if (mapping.ao) return 'ao';
     if (mapping.metallic) return 'metallic';
     return 'baseColor';
   }, [graph.nodes, graph.edges]);
@@ -1626,6 +1945,56 @@ export default function App() {
   useEffect(() => {
     setNodePreviewWarmupDone(!shouldRenderNodePreviews);
   }, [outputAffectingSig, shouldRenderNodePreviews]);
+
+  useEffect(() => {
+    const warmup = patternSize > PREVIEW_WARMUP_RESOLUTION ? PREVIEW_WARMUP_RESOLUTION : patternSize;
+    const rampKey = `${requestedResolutionSig}|target:${patternSize}`;
+    const isNewRamp = resolutionRampKeyRef.current !== rampKey;
+    if (isNewRamp) {
+      resolutionRampKeyRef.current = rampKey;
+      setPatternSizePromoting(patternSize > warmup);
+      if (activePatternSize !== warmup) {
+        applyLivePatternSize(warmup);
+        return;
+      }
+    }
+    if (patternSize <= warmup) {
+      if (activePatternSize !== patternSize) applyLivePatternSize(patternSize);
+      setPatternSizePromoting(false);
+      return;
+    }
+    if (activePatternSize >= patternSize) {
+      setPatternSizePromoting(false);
+      return;
+    }
+    if ((shouldRenderNodePreviews && !nodePreviewWarmupDone) || outputSurfacePending || gpuCooling) {
+      setPatternSizePromoting(true);
+      return;
+    }
+    const nextPromotionSize = getNextPreviewResolutionStep(activePatternSize, patternSize);
+    if (interacting || chaosMode || previewWorkPending) {
+      setPatternSizePromoting(true);
+      return;
+    }
+    setPatternSizePromoting(true);
+    const timer = window.setTimeout(() => {
+      applyLivePatternSize(nextPromotionSize);
+      if (nextPromotionSize >= patternSize) setPatternSizePromoting(false);
+    }, PREVIEW_RESOLUTION_PROMOTION_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    requestedResolutionSig,
+    patternSize,
+    activePatternSize,
+    shouldRenderNodePreviews,
+    nodePreviewWarmupDone,
+    outputSurfacePending,
+    gpuCooling,
+    interacting,
+    chaosMode,
+    previewWorkPending,
+    applyLivePatternSize,
+  ]);
 
   useEffect(() => {
     previewCompiledShadersRef.current.clear();
@@ -1698,6 +2067,11 @@ export default function App() {
     setRendererPerfP50(p50);
     setRendererPerfP95(p95);
 
+    const severeRenderOverload = sample.p95_ms > Math.max(sample.frame_budget_ms * 2.4, 42);
+    if (severeRenderOverload && !gpuCooling) {
+      enterGpuSafetyBackoff(`Viewport overload detected (${sample.p95_ms.toFixed(1)}ms p95)`);
+    }
+
     if (sample.budget_exceeded) {
       stableBudgetSinceRef.current = 0;
       deferThumbnails(420);
@@ -1735,7 +2109,7 @@ export default function App() {
     }
 
     stableBudgetSinceRef.current = 0;
-  }, [deferThumbnails, performanceMode, thumbnailBlockedUntil]);
+  }, [deferThumbnails, enterGpuSafetyBackoff, gpuCooling, performanceMode, thumbnailBlockedUntil]);
 
   const buildCompileBacktest = useCallback((snapshot: GraphData, backend: 'glsl' | 'wgsl'): string[] => {
     const failures: string[] = [];
@@ -1762,7 +2136,12 @@ export default function App() {
     return failures;
   }, [rawMode]);
 
-  const buildPreviewTemplateBacktest = useCallback((resolution: number): { failures: string[]; nodeCount: number; caseCount: number } => {
+  const buildPreviewTemplateBacktest = useCallback((resolution: number): {
+    failures: string[];
+    nodeCount: number;
+    caseCount: number;
+    unavailableReason?: string;
+  } => {
     const template = buildNodePreviewTemplateGraph(resolution);
     const failures: string[] = [];
     let caseCount = 0;
@@ -1781,14 +2160,26 @@ export default function App() {
           const canvas = renderShaderToSharedCanvas(compiled, 64);
           if (!canvas || canvas.width < 1 || canvas.height < 1) {
             if (_thumbCtx.unavailableReason) {
-              failures.push(`preview-template: GPU unavailable -> ${_thumbCtx.unavailableReason}`);
-              return { failures, nodeCount: template.nodes.length, caseCount };
+              return {
+                failures,
+                nodeCount: template.nodes.length,
+                caseCount,
+                unavailableReason: _thumbCtx.unavailableReason,
+              };
             }
             throw new Error('empty preview canvas');
           }
           caseCount += 1;
         } catch (err: any) {
           const msg = (err?.message || String(err) || 'unknown error').replace(/\s+/g, ' ').trim();
+          if (msg === THUMBNAIL_CONTEXT_DISABLED || msg === THUMBNAIL_CONTEXT_UNAVAILABLE) {
+            return {
+              failures,
+              nodeCount: template.nodes.length,
+              caseCount,
+              unavailableReason: _thumbCtx.unavailableReason || 'Node preview GPU path unavailable',
+            };
+          }
           failures.push(`preview-template: node=${node.id} type=${node.type} outPort=${port} -> ${msg}`);
           if (failures.length >= 12) {
             return { failures, nodeCount: template.nodes.length, caseCount };
@@ -1810,7 +2201,7 @@ export default function App() {
     const suiteStarted = performance.now();
     const snapshot = graphRef.current;
     const checks: MonitorCheckResult[] = [];
-    const outputs: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'metallic', 'height'];
+    const outputs: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'metallic', 'ao', 'height'];
     try {
 
     const runCheck = async (id: string, label: string, fn: () => Promise<Omit<MonitorCheckResult, 'id' | 'label' | 'durationMs'>> | Omit<MonitorCheckResult, 'id' | 'label' | 'durationMs'>) => {
@@ -1872,7 +2263,14 @@ export default function App() {
     });
 
     await runCheck('preview_template', 'All-Nodes Preview Template', () => {
-      const { failures, nodeCount, caseCount } = buildPreviewTemplateBacktest(snapshot.resolution ?? 512);
+      const { failures, nodeCount, caseCount, unavailableReason } = buildPreviewTemplateBacktest(snapshot.resolution ?? 512);
+      if (unavailableReason) {
+        return {
+          severity: 'warn',
+          message: 'Skipped: node preview GPU path unavailable',
+          details: unavailableReason,
+        };
+      }
       if (failures.length > 0) {
         return {
           severity: 'fail',
@@ -1909,7 +2307,7 @@ export default function App() {
         return { severity: 'ok', message: 'No preview viewport is open (check skipped)' };
       }
       if (!rendererPerf) {
-        return { severity: 'warn', message: 'No live render samples yet' };
+        return { severity: 'ok', message: 'Skipped: no active viewport samples' };
       }
       const p95 = rendererPerfP95;
       const soft = previewFrameBudgetMs + 2;
@@ -2245,6 +2643,7 @@ export default function App() {
     const timings: Record<string, number> = {};
     let idleHandle = 0;
     const compiler = new Compiler(snapshot);
+    const nodeThumbSize = resolveNodePreviewTextureSize(graphZoomLevel);
     const outputThumbChannel = resolveThumbnailOutputChannel(snapshot);
     const getNodePreviewPort = (nodeId: string): number => {
       const node = nodeById.get(nodeId);
@@ -2273,6 +2672,7 @@ export default function App() {
       if (disposed) return;
       const chunk: Record<string, string> = {};
       let produced = 0;
+      let suspended = false;
       const thumbBatchStart = performance.now();
       while (idx < nodesToRender.length && (deadline.timeRemaining() > 2 || deadline.didTimeout) && produced < batchSize) {
         const node = nodesToRender[idx++];
@@ -2296,11 +2696,11 @@ export default function App() {
           } else {
             previewCompiledShadersRef.current.delete(meta.requestKey);
           }
-          const thumbKey = buildThumbnailKey(runtimeCompiled, NODE_THUMB_SIZE, meta.requestKey);
+          const thumbKey = buildThumbnailKey(runtimeCompiled, nodeThumbSize, meta.requestKey);
           let thumb = nodePreviewImageCacheRef.current.get(thumbKey);
           if (!thumb) {
             const rb0 = performance.now();
-            thumb = renderShaderThumbnail(runtimeCompiled, NODE_THUMB_SIZE);
+            thumb = renderShaderThumbnail(runtimeCompiled, nodeThumbSize);
             lastReadbackMsRef.current += performance.now() - rb0;
             nodePreviewImageCacheRef.current.set(thumbKey, thumb);
             const thumbCacheLimit = totalNodes > 160 ? 160 : 320;
@@ -2316,6 +2716,23 @@ export default function App() {
           timings[node.id] = performance.now() - t0;
           produced++;
         } catch (err: any) {
+          if ((err?.message || '') === THUMBNAIL_CONTEXT_DISABLED) {
+            nodePreviewImageCacheRef.current.clear();
+            nodePreviewKeysRef.current = {};
+            setNodePreviews({});
+            setNodeTimings({});
+            setThumbnailStatusMessage('Node previews unavailable: WebGL is disabled in this environment.');
+            enterGpuSafetyBackoff('Node preview GPU path disabled', true);
+            markWarmupDone();
+            return;
+          }
+          if ((err?.message || '') === THUMBNAIL_CONTEXT_UNAVAILABLE) {
+            idx = Math.max(0, idx - 1);
+            deferThumbnails(THUMBNAIL_RETRY_MS);
+            enterGpuSafetyBackoff('Node preview GPU path temporarily unavailable');
+            suspended = true;
+            break;
+          }
           const staleKey = `stale|${startSig}|${node.id}`;
           appendAppLog({
             level: 'warn',
@@ -2327,7 +2744,7 @@ export default function App() {
           });
           if (nodePreviewKeysRef.current[node.id] !== staleKey) {
             nodePreviewKeysRef.current[node.id] = staleKey;
-            chunk[node.id] = renderErrorThumbnail(NODE_THUMB_SIZE, 'ERR');
+            chunk[node.id] = renderErrorThumbnail(nodeThumbSize, 'ERR');
           }
         }
       }
@@ -2342,6 +2759,7 @@ export default function App() {
         setNodeTimings((prev) => ({ ...prev, ...timings }));
         lastUiCommitMsRef.current += performance.now() - ui0;
       }
+      if (suspended) return;
       if (idx < nodesToRender.length) {
         idleHandle = scheduleIdle(step);
       } else {
@@ -2365,6 +2783,7 @@ export default function App() {
     pinnedPreviewNodeId,
     visibleNodeIds,
     nodePreviewWarmupDone,
+    graphZoomLevel,
     interacting,
     chaosMode,
     previewWorkPending,
@@ -2372,14 +2791,23 @@ export default function App() {
     performanceMode,
     viewportQuality.scale,
     graphPerfHash,
+    enterGpuSafetyBackoff,
   ]);
 
   useEffect(() => {
-    if (!shouldRenderOutputSurfaces || !preview3dReady || interacting || chaosMode) return;
+    if (!shouldRenderOutputSurfaces || interacting || chaosMode || previewWorkPending || gpuCooling) {
+      setOutputSurfacePending(false);
+      return;
+    }
+    if (shouldRenderNodePreviews && !nodePreviewWarmupDone) {
+      setOutputSurfacePending(false);
+      return;
+    }
     let disposed = false;
+    setOutputSurfacePending(true);
     const snapshot = graphRef.current;
-    const size = Math.max(128, Math.min(patternSize, 1024));
-    const channels: OutputChannel[] = ['baseColor', 'normal', 'roughness', 'metallic', 'height'];
+    const size = Math.max(128, Math.min(activePatternSize, 1024));
+    const channels: OutputChannel[] = ['baseColor', 'normal', 'roughness', 'metallic', 'ao', 'height'];
     const compiler = new Compiler(snapshot);
     const updates: Partial<Record<OutputChannel, { key: string; canvas: HTMLCanvasElement }>> = {};
     const w = window as any;
@@ -2418,7 +2846,13 @@ export default function App() {
           const existingSurface = outputPreviewSurfacesRef.current[channel];
           const canvas = renderShaderToCanvas(runtimeCompiled, size, existingSurface?.canvas);
           updates[channel] = { key: mapKey, canvas };
-        } catch {
+        } catch (err: any) {
+          const message = (err?.message || '').trim();
+          if (message === THUMBNAIL_CONTEXT_DISABLED || message === THUMBNAIL_CONTEXT_UNAVAILABLE) {
+            enterGpuSafetyBackoff(`Output surfaces paused: ${message === THUMBNAIL_CONTEXT_DISABLED ? 'shared WebGL disabled' : 'shared WebGL unavailable'}`, message === THUMBNAIL_CONTEXT_DISABLED);
+            setOutputSurfacePending(false);
+            return;
+          }
           if (outputPreviewKeysRef.current[channel] !== '') {
             updates[channel] = { key: '', canvas: document.createElement('canvas') };
           }
@@ -2430,6 +2864,7 @@ export default function App() {
         return;
       }
 
+      setOutputSurfacePending(false);
       setOutputPreviewSurfaces((prev) => {
         const next = { ...prev };
         let changed = false;
@@ -2458,18 +2893,23 @@ export default function App() {
 
     return () => {
       disposed = true;
+      setOutputSurfacePending(false);
       window.clearTimeout(startTimer);
       if (idleHandle) cancelIdle(idleHandle);
     };
   }, [
     outputAffectingSig,
     shouldRenderOutputSurfaces,
-    preview3dReady,
+    shouldRenderNodePreviews,
+    nodePreviewWarmupDone,
     rawMode,
-    patternSize,
+    activePatternSize,
     interacting,
     chaosMode,
-    performanceMode
+    previewWorkPending,
+    gpuCooling,
+    performanceMode,
+    enterGpuSafetyBackoff,
   ]);
 
   const onExport = useCallback(() => {
@@ -2586,6 +3026,7 @@ export default function App() {
     onCanvasInteractionStart,
     onCanvasInteractionEnd,
     onVisibleNodeIdsChange,
+    onGraphZoomChange,
     nodePreviews, outputPreviewSurfaces, nodeTimings,
     graphViewCommandNonce,
     graphViewCommandType,
@@ -2596,10 +3037,18 @@ export default function App() {
     previewShader, codeShader, compileError, patternSize, previewResolution,
     previewTarget,
     previewResScale,
+    previewHiDpi,
+    previewRenderEnabled,
+    previewPaintEnabled,
+    previewPaintBrush,
+    previewPaintBrushRadius: previewBrushRadius,
+    previewPaintBrushColor: previewBrushColor,
     interacting,
     pinnedPreviewNodeId,
     previewFrameBudgetMs,
     preview3dReady,
+    preview3dRenderer,
+    setPreview3dRenderer,
     performanceMode,
     viewportQuality,
     rendererPerf,
@@ -2608,7 +3057,17 @@ export default function App() {
     thumbnailDeferred,
     graphPerfHash,
     onViewportPerfSample,
+    onViewportGpuFailure: handleViewportGpuFailure,
+    gpuCooling,
+    gpuSafetyMessage,
     onPinPreview: setPinnedPreviewNodeId,
+    onTogglePreviewHiDpi: () => setPreviewHiDpi(v => !v),
+    onTogglePreviewRenderEnabled: () => setPreviewRenderEnabled(v => !v),
+    onTogglePreviewPaintEnabled: () => setPreviewPaintEnabled(v => !v),
+    onSetPreviewPaintBrushRadius: (radius: number) => setPreviewBrushRadius(Math.max(1, Math.min(256, radius))),
+    onSetPreviewPaintBrushColor: (color: string) => {
+      if (/^#[0-9a-fA-F]{6}$/.test(color)) setPreviewBrushColor(color);
+    },
     tile, rawMode,
     onToggleTile: () => {},
     onToggleRawMode: () => setRawMode(v => !v),
@@ -2625,12 +3084,13 @@ export default function App() {
     graph, selectedNodeId, onMove, onMoveFrame, onResizeFrame, onDeleteFrame, onAddFrameAt, onUpdateFrame, onDeleteEdge, onConnect, onUpdateParam, onAddNode, onDeleteNode,
     onSelectionSetChange,
     onVisibleNodeIdsChange,
+    onGraphZoomChange,
     closeTransientUi, openContextMenu, onCanvasInteractionStart, onCanvasInteractionEnd, nodePreviews, outputPreviewSurfaces, nodeTimings, graphViewCommandNonce, graphViewCommandType,
     snapEnabled, snapGridSize,
     previewShader, codeShader, compileError, patternSize, previewResolution,
-    previewTarget, previewResScale, interacting, pinnedPreviewNodeId,
-    previewFrameBudgetMs, preview3dReady, performanceMode, viewportQuality, rendererPerf, rendererPerfP95, rendererPerfP50,
-    thumbnailDeferred, graphPerfHash, onViewportPerfSample,
+    previewTarget, previewResScale, previewHiDpi, previewRenderEnabled, previewPaintEnabled, previewPaintBrush, previewBrushRadius, previewBrushColor, interacting, pinnedPreviewNodeId,
+    previewFrameBudgetMs, preview3dReady, preview3dRenderer, performanceMode, viewportQuality, rendererPerf, rendererPerfP95, rendererPerfP50,
+    thumbnailDeferred, graphPerfHash, onViewportPerfSample, handleViewportGpuFailure, gpuCooling, gpuSafetyMessage,
     tile, rawMode, uniformRows, stats, onPreviewError,
     monitorRuns, monitorRunning, runMonitorSuite, clearMonitorRuns,
     libraryByCategory, libSearch, collapsedCats, toggleCat,
@@ -2663,6 +3123,7 @@ export default function App() {
                 <div className="nt-drop-item" onClick={() => { addView('library', 'Library'); setWindowMenuOpen(false); }}>New Library</div>
                 <div className="nt-drop-item" onClick={() => { addView('explorer', 'Explorer'); setWindowMenuOpen(false); }}>New Explorer</div>
                 <div style={menuDropSep} />
+                <div className="nt-drop-item" onClick={() => { loadDirtStoneDemo(); setWindowMenuOpen(false); }}>Load Demo Material (Dirt + Stones)</div>
                 <div className="nt-drop-item" onClick={() => { loadAutoLayoutDemo(); setWindowMenuOpen(false); }}>Load Demo DAG (Layout)</div>
                 <div style={menuDropSep} />
                 <div className="nt-drop-item" onClick={() => {
@@ -2714,6 +3175,16 @@ export default function App() {
           <select value={patternSize} onChange={e => onSetPatternSize(parseInt(e.target.value, 10))} className="nt-select" title="Texture size">
             {[256, 512, 1024, 2048].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
+          {patternSizePromoting && activePatternSize < patternSize && (
+            <span style={{ ...labelStyle, color: '#d3a15f' }} title={`Rendering live at ${activePatternSize} first, then promoting to ${patternSize}`}>
+              {`${activePatternSize} -> ${patternSize}`}
+            </span>
+          )}
+          {gpuCooling && (
+            <span style={{ ...labelStyle, color: '#f0b36c' }} title={gpuSafetyMessage || 'GPU safety cooldown active'}>
+              {`GPU SAFE 256${gpuFailureCount > 0 ? ` x${gpuFailureCount}` : ''}`}
+            </span>
+          )}
           <div style={dividerStyle} />
           <button onClick={frameAllGraphView} className="nt-btn nt-btn-icon" title="Frame all graph content" aria-label="Frame all">
             <Maximize2 size={14} />
@@ -2758,6 +3229,25 @@ export default function App() {
             <RotateCcw size={14} />
           </button>
         </div>
+
+        {thumbnailStatusMessage && (
+          <div
+            style={{
+              height: 26,
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0 10px',
+              borderBottom: '1px solid #4f4530',
+              background: '#2a2418',
+              color: '#e6d2a5',
+              fontSize: 11,
+              letterSpacing: 0.2,
+              flexShrink: 0,
+            }}
+          >
+            {thumbnailStatusMessage}
+          </div>
+        )}
 
         <Workspace renderView={renderView} />
 
@@ -2858,7 +3348,50 @@ const _thumbCtx: {
   lastSize?: number;
   unavailableReason?: string;
   unavailableLogged?: boolean;
+  retryAfter?: number;
+  hardDisabled?: boolean;
 } = {};
+
+const THUMBNAIL_CONTEXT_UNAVAILABLE = 'THUMBNAIL_CONTEXT_UNAVAILABLE';
+const THUMBNAIL_CONTEXT_DISABLED = 'THUMBNAIL_CONTEXT_DISABLED';
+const THUMBNAIL_RETRY_MS = 2500;
+
+function isPermanentThumbnailContextFailure(reason: string): boolean {
+  return /GL_VENDOR\s*=\s*Disabled|GL_RENDERER\s*=\s*Disabled|Sandboxed\s*=\s*yes|BindToCurrentSequence failed/i.test(reason);
+}
+
+function resetSharedThumbnailContext(
+  reason: string,
+  retryDelayMs: number = THUMBNAIL_RETRY_MS,
+  permanent: boolean = false,
+) {
+  try {
+    _thumbCtx.material?.dispose();
+  } catch {
+    /* ignore */
+  }
+  try {
+    _thumbCtx.geo?.dispose();
+  } catch {
+    /* ignore */
+  }
+  try {
+    _thumbCtx.renderer?.dispose();
+  } catch {
+    /* ignore */
+  }
+  _thumbCtx.renderer = undefined;
+  _thumbCtx.scene = undefined;
+  _thumbCtx.camera = undefined;
+  _thumbCtx.mesh = undefined;
+  _thumbCtx.geo = undefined;
+  _thumbCtx.material = undefined;
+  _thumbCtx.shaderKey = '';
+  _thumbCtx.lastSize = undefined;
+  _thumbCtx.unavailableReason = reason;
+  _thumbCtx.hardDisabled = permanent;
+  _thumbCtx.retryAfter = permanent ? Number.POSITIVE_INFINITY : performance.now() + Math.max(250, retryDelayMs);
+}
 
 function uniformValueKey(value: any): string {
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return String(value);
@@ -2890,15 +3423,70 @@ function buildThumbnailKey(compiled: CompiledShader, size: number, context = '')
   return `${size}|${context}|${compiled.hash}|${compiled.vertex.length}|${compiled.fragment.length}|${entries.join('|')}`;
 }
 
+function createThumbnailWebGLContext(canvas: HTMLCanvasElement): WebGLRenderingContext | WebGL2RenderingContext | null {
+  const attrs: WebGLContextAttributes = {
+    alpha: true,
+    antialias: false,
+    preserveDrawingBuffer: true,
+    premultipliedAlpha: true,
+    powerPreference: 'low-power',
+  };
+  try {
+    return (
+      canvas.getContext('webgl2', attrs)
+      || canvas.getContext('webgl', attrs)
+      || canvas.getContext('experimental-webgl', attrs)
+    ) as WebGLRenderingContext | WebGL2RenderingContext | null;
+  } catch {
+    return null;
+  }
+}
+
 function renderShaderToSharedCanvas(compiled: CompiledShader, size: number): HTMLCanvasElement | null {
-  if (_thumbCtx.unavailableReason) return null;
+  if (_thumbCtx.hardDisabled) {
+    throw new Error(THUMBNAIL_CONTEXT_DISABLED);
+  }
+  if (_thumbCtx.unavailableReason) {
+    const retryAfter = _thumbCtx.retryAfter ?? 0;
+    if (retryAfter > performance.now()) {
+      throw new Error(THUMBNAIL_CONTEXT_UNAVAILABLE);
+    }
+    _thumbCtx.unavailableReason = undefined;
+    _thumbCtx.retryAfter = 0;
+    _thumbCtx.unavailableLogged = false;
+    _thumbCtx.hardDisabled = false;
+  }
 
   if (!_thumbCtx.renderer) {
     try {
       const canvas = document.createElement('canvas');
       canvas.width = size;
       canvas.height = size;
-      _thumbCtx.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, preserveDrawingBuffer: true, antialias: false });
+      const context = createThumbnailWebGLContext(canvas);
+      if (!context) {
+        const reason = 'WebGL unavailable in this environment';
+        _thumbCtx.unavailableReason = reason;
+        _thumbCtx.retryAfter = Number.POSITIVE_INFINITY;
+        _thumbCtx.hardDisabled = true;
+        _thumbCtx.unavailableLogged = true;
+        throw new Error(THUMBNAIL_CONTEXT_DISABLED);
+      }
+      canvas.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        resetSharedThumbnailContext('WebGL thumbnail context lost');
+      }, { passive: false });
+      canvas.addEventListener('webglcontextrestored', () => {
+        _thumbCtx.unavailableReason = undefined;
+        _thumbCtx.retryAfter = 0;
+        _thumbCtx.hardDisabled = false;
+      });
+      _thumbCtx.renderer = new THREE.WebGLRenderer({
+        canvas,
+        context,
+        alpha: true,
+        preserveDrawingBuffer: true,
+        antialias: false,
+      });
       _thumbCtx.renderer.setPixelRatio(1);
       _thumbCtx.renderer.setSize(size, size, false);
       _thumbCtx.renderer.setClearColor(0x000000, 1);
@@ -2911,13 +3499,18 @@ function renderShaderToSharedCanvas(compiled: CompiledShader, size: number): HTM
       _thumbCtx.shaderKey = '';
       _thumbCtx.scene.add(_thumbCtx.mesh);
       _thumbCtx.lastSize = size;
+      _thumbCtx.unavailableReason = undefined;
+      _thumbCtx.retryAfter = 0;
+      _thumbCtx.hardDisabled = false;
     } catch (err: any) {
-      _thumbCtx.unavailableReason = (err?.message || String(err) || 'WebGL context creation failed').replace(/\s+/g, ' ').trim();
-      if (!_thumbCtx.unavailableLogged) {
-        _thumbCtx.unavailableLogged = true;
-        console.warn(`[thumb] WebGL thumbnails disabled: ${_thumbCtx.unavailableReason}`);
-      }
-      return null;
+      const reason = (err?.message || String(err) || 'WebGL context creation failed').replace(/\s+/g, ' ').trim();
+      const permanent = isPermanentThumbnailContextFailure(reason);
+      _thumbCtx.unavailableReason = reason;
+      _thumbCtx.retryAfter = permanent ? Number.POSITIVE_INFINITY : performance.now() + THUMBNAIL_RETRY_MS;
+      _thumbCtx.hardDisabled = permanent;
+      _thumbCtx.unavailableLogged = true;
+      if (permanent) throw new Error(THUMBNAIL_CONTEXT_DISABLED);
+      throw new Error(THUMBNAIL_CONTEXT_UNAVAILABLE);
     }
   }
 
@@ -2954,27 +3547,37 @@ function renderShaderToSharedCanvas(compiled: CompiledShader, size: number): HTM
   uniforms.u_preview_tile = { value: 0 };
 
   const shaderKey = `${compiled.hash}|${compiled.vertex.length}|${compiled.fragment.length}`;
-  if (!_thumbCtx.material || _thumbCtx.shaderKey !== shaderKey) {
-    const material = new THREE.ShaderMaterial({
-      vertexShader: compiled.vertex,
-      fragmentShader: compiled.fragment,
-      uniforms
-    });
-    if (_thumbCtx.material && _thumbCtx.material !== material) _thumbCtx.material.dispose();
-    _thumbCtx.material = material;
-    _thumbCtx.shaderKey = shaderKey;
-    _thumbCtx.mesh!.material = material;
-  } else {
-    const material = _thumbCtx.material;
-    Object.entries(uniforms).forEach(([name, value]) => {
-      if (material.uniforms[name]) material.uniforms[name].value = (value as any).value;
-      else material.uniforms[name] = value as any;
-    });
-    material.needsUpdate = false;
-  }
+  try {
+    if (!_thumbCtx.material || _thumbCtx.shaderKey !== shaderKey) {
+      const material = new THREE.ShaderMaterial({
+        vertexShader: compiled.vertex,
+        fragmentShader: compiled.fragment,
+        uniforms
+      });
+      if (_thumbCtx.material && _thumbCtx.material !== material) _thumbCtx.material.dispose();
+      _thumbCtx.material = material;
+      _thumbCtx.shaderKey = shaderKey;
+      _thumbCtx.mesh!.material = material;
+    } else {
+      const material = _thumbCtx.material;
+      Object.entries(uniforms).forEach(([name, value]) => {
+        if (material.uniforms[name]) material.uniforms[name].value = (value as any).value;
+        else material.uniforms[name] = value as any;
+      });
+      material.needsUpdate = false;
+    }
 
-  _thumbCtx.renderer.render(_thumbCtx.scene, _thumbCtx.camera);
-  return _thumbCtx.renderer.domElement;
+    _thumbCtx.renderer.render(_thumbCtx.scene, _thumbCtx.camera);
+    return _thumbCtx.renderer.domElement;
+  } catch (err: any) {
+    const reason = (err?.message || String(err) || 'thumbnail render failed').replace(/\s+/g, ' ').trim();
+    resetSharedThumbnailContext(reason, THUMBNAIL_RETRY_MS, isPermanentThumbnailContextFailure(reason));
+    if (!_thumbCtx.unavailableLogged) {
+      _thumbCtx.unavailableLogged = true;
+      console.warn(`[thumb] Shared thumbnail renderer reset: ${reason}`);
+    }
+    throw new Error(THUMBNAIL_CONTEXT_UNAVAILABLE);
+  }
 }
 
 function renderShaderToCanvas(compiled: CompiledShader, size: number, targetCanvas?: HTMLCanvasElement): HTMLCanvasElement {
@@ -3002,7 +3605,7 @@ function renderShaderToCanvas(compiled: CompiledShader, size: number, targetCanv
 
 function renderShaderThumbnail(compiled: CompiledShader, size: number): string {
   const canvas = renderShaderToSharedCanvas(compiled, size);
-  if (!canvas) return renderErrorThumbnail(size, 'NO GPU');
+  if (!canvas) throw new Error(_thumbCtx.hardDisabled ? THUMBNAIL_CONTEXT_DISABLED : THUMBNAIL_CONTEXT_UNAVAILABLE);
   return canvas.toDataURL('image/png');
 }
 

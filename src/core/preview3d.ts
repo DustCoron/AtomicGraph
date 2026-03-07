@@ -20,6 +20,7 @@ export interface Preview3DBindings {
   normal: Preview3DChannelBinding;
   height: Preview3DChannelBinding;
   metallic: Preview3DChannelBinding;
+  ao: Preview3DChannelBinding;
   connectedCount: number;
   signature: string;
 }
@@ -52,10 +53,11 @@ export function buildPreview3DBindings(surfaces?: SurfaceMap): Preview3DBindings
   const normal = buildChannelBinding('normal', surfaces);
   const height = buildChannelBinding('height', surfaces);
   const metallic = buildChannelBinding('metallic', surfaces);
-  const channels = [baseColor, roughness, normal, metallic, height];
+  const ao = buildChannelBinding('ao', surfaces);
+  const channels = [baseColor, roughness, normal, metallic, ao, height];
   const connectedCount = channels.reduce((acc, c) => acc + (c.connected ? 1 : 0), 0);
   const signature = channels
     .map((c) => `${c.channel}:${c.key || 'none'}:${c.version}`)
     .join('|');
-  return { baseColor, roughness, normal, height, metallic, connectedCount, signature };
+  return { baseColor, roughness, normal, height, metallic, ao, connectedCount, signature };
 }

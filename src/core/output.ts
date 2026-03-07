@@ -1,6 +1,6 @@
 import { EdgeData, GraphData, NodeData } from './types';
 
-export type OutputChannel = 'baseColor' | 'roughness' | 'normal' | 'height' | 'metallic';
+export type OutputChannel = 'baseColor' | 'roughness' | 'normal' | 'height' | 'metallic' | 'ao';
 
 export interface OutputChannelMapping {
   baseColor?: EdgeData;
@@ -8,6 +8,7 @@ export interface OutputChannelMapping {
   normal?: EdgeData;
   height?: EdgeData;
   metallic?: EdgeData;
+  ao?: EdgeData;
 }
 
 export interface ExportPresetTarget {
@@ -27,7 +28,8 @@ export const OUTPUT_CHANNEL_PORTS: Record<OutputChannel, number> = {
   roughness: 1,
   normal: 2,
   height: 3,
-  metallic: 4
+  metallic: 4,
+  ao: 5
 };
 
 export const OUTPUT_CHANNEL_NODE_TYPES: Record<OutputChannel, string> = {
@@ -35,7 +37,8 @@ export const OUTPUT_CHANNEL_NODE_TYPES: Record<OutputChannel, string> = {
   roughness: 'output_roughness',
   normal: 'output_normal',
   height: 'output_height',
-  metallic: 'output_metallic'
+  metallic: 'output_metallic',
+  ao: 'output_ao'
 };
 
 export const OUTPUT_NODE_TYPE_TO_CHANNEL: Record<string, OutputChannel> = {
@@ -43,7 +46,8 @@ export const OUTPUT_NODE_TYPE_TO_CHANNEL: Record<string, OutputChannel> = {
   output_roughness: 'roughness',
   output_normal: 'normal',
   output_height: 'height',
-  output_metallic: 'metallic'
+  output_metallic: 'metallic',
+  output_ao: 'ao'
 };
 
 const PORT_TO_CHANNEL: Record<number, OutputChannel> = {
@@ -51,7 +55,8 @@ const PORT_TO_CHANNEL: Record<number, OutputChannel> = {
   1: 'roughness',
   2: 'normal',
   3: 'height',
-  4: 'metallic'
+  4: 'metallic',
+  5: 'ao'
 };
 
 export const EXPORT_PRESETS: ExportPreset[] = [
@@ -63,7 +68,8 @@ export const EXPORT_PRESETS: ExportPreset[] = [
       { channel: 'roughness', fileSuffix: 'roughness', format: 'png' },
       { channel: 'normal', fileSuffix: 'normal', format: 'png' },
       { channel: 'height', fileSuffix: 'height', format: 'png' },
-      { channel: 'metallic', fileSuffix: 'metallic', format: 'png' }
+      { channel: 'metallic', fileSuffix: 'metallic', format: 'png' },
+      { channel: 'ao', fileSuffix: 'ao', format: 'png' }
     ]
   }
 ];

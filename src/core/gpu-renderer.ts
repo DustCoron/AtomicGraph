@@ -48,7 +48,8 @@ export class GPUQuadRenderer {
       isWindows ? undefined : { powerPreference: 'high-performance' }
     );
     if (!adapter) return false;
-    this.device = await adapter.requestDevice();
+    // Babylon.js typings add a branded GPUDevice variant; cast keeps DOM/WebGPU interop stable.
+    this.device = await adapter.requestDevice() as unknown as GPUDevice;
     this.context = canvas.getContext('webgpu') as GPUCanvasContext;
     if (!this.context) return false;
     this.format = navigator.gpu.getPreferredCanvasFormat();
@@ -196,6 +197,18 @@ export class GPUQuadRenderer {
 
   get isReady() {
     return !!this.pipeline;
+  }
+
+  getDevice(): GPUDevice {
+    return this.device;
+  }
+
+  getCanvasContext(): GPUCanvasContext {
+    return this.context;
+  }
+
+  getPresentationFormat(): GPUTextureFormat {
+    return this.format;
   }
 
   dispose() {

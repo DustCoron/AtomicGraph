@@ -613,7 +613,8 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
       { id: 'roughness', type: 'float', label: 'Roughness' },
       { id: 'normal', type: 'vec3', label: 'Normal' },
       { id: 'height', type: 'float', label: 'Height' },
-      { id: 'metallic', type: 'float', label: 'Metallic' }
+      { id: 'metallic', type: 'float', label: 'Metallic' },
+      { id: 'ao', type: 'float', label: 'AO' }
     ],
     outputs: [],
     params: {}
@@ -645,6 +646,12 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
   output_metallic: {
     type: 'output_metallic', label: 'Output Metallic', category: 'output',
     inputs: [{ id: 'metallic', type: 'float', label: 'Metallic' }],
+    outputs: [],
+    params: {}
+  },
+  output_ao: {
+    type: 'output_ao', label: 'Output AO', category: 'output',
+    inputs: [{ id: 'ao', type: 'float', label: 'AO' }],
     outputs: [],
     params: {}
   }
@@ -701,6 +708,7 @@ if (NODE_REGISTRY_V2.output) {
   NODE_REGISTRY_V2.output.inputs[2].constraints = { maxConnections: 1, allowedTypes: ['float', 'vec3', 'vec4'] };
   NODE_REGISTRY_V2.output.inputs[3].constraints = { maxConnections: 1, allowedTypes: ['float'] };
   NODE_REGISTRY_V2.output.inputs[4].constraints = { maxConnections: 1, allowedTypes: ['float'] };
+  NODE_REGISTRY_V2.output.inputs[5].constraints = { maxConnections: 1, allowedTypes: ['float'] };
 }
 if (NODE_REGISTRY_V2.output_baseColor) {
   NODE_REGISTRY_V2.output_baseColor.inputs[0].constraints = { maxConnections: 1, allowedTypes: ['float', 'vec3', 'vec4'] };
@@ -716,6 +724,9 @@ if (NODE_REGISTRY_V2.output_height) {
 }
 if (NODE_REGISTRY_V2.output_metallic) {
   NODE_REGISTRY_V2.output_metallic.inputs[0].constraints = { maxConnections: 1, allowedTypes: ['float'] };
+}
+if (NODE_REGISTRY_V2.output_ao) {
+  NODE_REGISTRY_V2.output_ao.inputs[0].constraints = { maxConnections: 1, allowedTypes: ['float'] };
 }
 
 export const getNodeDefinitionV2 = (type: string): NodeDefinitionV2 | undefined => NODE_REGISTRY_V2[type];

@@ -3,11 +3,13 @@ import { CompiledShader, CompiledUniformDescriptor } from '../core/compiler';
 import { GraphData, NodeData } from '../core/types';
 import { GraphEngine } from '../core/graph';
 import { CATEGORIES, NODE_REGISTRY } from '../core/registry';
+import type { PaintBrushParams } from '../core/gpu-paint';
 import { AppLogEntry, clearAppLogs, downloadAppLogsFile, formatAppLog, getAppLogs, subscribeAppLogs } from '../core/logs';
 import { getExportPreset, getOutputNodeForChannel, OutputChannel, resolveOutputChannels } from '../core/output';
 import { PerformanceMode, RendererPerfSample, ViewportPerfSample, ViewportQualityState } from '../core/perf';
 import { MonitorMode, MonitorSuiteRun, getRunOverallSeverity, severityWeight } from '../core/monitor';
 import { GraphContextMenuRequest, GraphEditor } from '../components/GraphEditor';
+import { createDefaultPreview3DSharedSceneState } from '../components/preview3dShared';
 const LazyViewport = React.lazy(async () => {
   const mod = await import('../components/Viewport');
   return { default: mod.Viewport };
@@ -15,6 +17,10 @@ const LazyViewport = React.lazy(async () => {
 const LazyViewport3D = React.lazy(async () => {
   const mod = await import('../components/Viewport3D');
   return { default: mod.Viewport3D };
+});
+const LazyViewport3DBabylon = React.lazy(async () => {
+  const mod = await import('../components/Viewport3DBabylon');
+  return { default: mod.Viewport3DBabylon };
 });
 
 export interface UniformRow {
@@ -75,6 +81,7 @@ export interface AppContextValue {
   onCanvasInteractionStart?: () => void;
   onCanvasInteractionEnd?: () => void;
   onVisibleNodeIdsChange?: (ids: string[]) => void;
+  onGraphZoomChange?: (zoom: number) => void;
   nodePreviews?: Record<string, string>;
   outputPreviewSurfaces?: Partial<Record<OutputChannel, OutputPreviewSurface>>;
   nodeTimings?: Record<string, number>;
@@ -93,11 +100,24 @@ export interface AppContextValue {
   previewTarget: PreviewTargetInfo;
 
   previewResScale: number;
+  previewHiDpi: boolean;
+  previewRenderEnabled: boolean;
+  previewPaintEnabled: boolean;
+  previewPaintBrush: PaintBrushParams;
+  previewPaintBrushRadius: number;
+  previewPaintBrushColor: string;
+  onTogglePreviewHiDpi: () => void;
+  onTogglePreviewRenderEnabled: () => void;
+  onTogglePreviewPaintEnabled: () => void;
+  onSetPreviewPaintBrushRadius: (radius: number) => void;
+  onSetPreviewPaintBrushColor: (color: string) => void;
   interacting: boolean;
   pinnedPreviewNodeId: string | null;
   onPinPreview: (nodeId: string | null) => void;
   previewFrameBudgetMs: number;
   preview3dReady: boolean;
+  preview3dRenderer: 'three' | 'babylon';
+  setPreview3dRenderer: (renderer: 'three' | 'babylon') => void;
   performanceMode: PerformanceMode;
   viewportQuality: ViewportQualityState;
   rendererPerf: RendererPerfSample | null;
@@ -106,6 +126,9 @@ export interface AppContextValue {
   thumbnailDeferred: boolean;
   graphPerfHash: string;
   onViewportPerfSample: (sample: ViewportPerfSample) => void;
+  onViewportGpuFailure?: (source: 'three' | 'babylon', reason: string, hard?: boolean) => void;
+  gpuCooling?: boolean;
+  gpuSafetyMessage?: string | null;
 
   tile: boolean;
   rawMode: boolean;
@@ -345,6 +368,7 @@ export function GraphView() {
         onCanvasInteractionStart={app.onCanvasInteractionStart}
         onCanvasInteractionEnd={app.onCanvasInteractionEnd}
         onVisibleNodeIdsChange={app.onVisibleNodeIdsChange}
+        onZoomChange={app.onGraphZoomChange}
         onNodeOpen={onNodeOpen}
         onCanvasClick={app.onCanvasClick}
         onRequestContextMenu={app.onRequestContextMenu}
@@ -483,10 +507,52 @@ export function PreviewView() {
           <span style={{ fontSize: 8, color: '#f3bd8e', letterSpacing: 0.3 }}>THUMB DEFER</span>
         )}
 
+        <button
+          className="nt-btn-sm"
+          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          onClick={app.onTogglePreviewHiDpi}
+          title={app.previewHiDpi ? 'HiDPI on (uses device pixel ratio)' : 'LowDPI on (forces DPR=1)'}
+        >
+          {app.previewHiDpi ? 'HiDPI' : 'LowDPI'}
+        </button>
+        <button
+          className="nt-btn-sm"
+          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          onClick={app.onTogglePreviewRenderEnabled}
+          title={app.previewRenderEnabled ? 'Disable preview rendering loop' : 'Enable preview rendering loop'}
+        >
+          {app.previewRenderEnabled ? 'Render On' : 'Render Off'}
+        </button>
+        <button
+          className="nt-btn-sm"
+          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          onClick={app.onTogglePreviewPaintEnabled}
+          title={app.previewPaintEnabled ? 'Painting mode enabled' : 'Enable painting mode'}
+        >
+          {app.previewPaintEnabled ? 'Paint On' : 'Paint Off'}
+        </button>
+        <input
+          type="range"
+          min={1}
+          max={256}
+          step={1}
+          value={app.previewPaintBrushRadius}
+          onChange={(e) => app.onSetPreviewPaintBrushRadius(parseInt(e.target.value, 10) || 1)}
+          title={`Brush size: ${Math.round(app.previewPaintBrushRadius)}px`}
+          style={{ width: 84, height: 18 }}
+        />
+        <input
+          type="color"
+          value={app.previewPaintBrushColor}
+          onChange={(e) => app.onSetPreviewPaintBrushColor(e.target.value)}
+          title="Brush color"
+          style={{ width: 24, height: 20, border: '1px solid #3f4a63', borderRadius: 4, background: 'transparent', padding: 0 }}
+        />
+
         <span style={{ marginLeft: 'auto', fontSize: 10, color: '#8791ad' }}>
           {vpSize.w}x{vpSize.h}
           {vpSize.dpr > 1 ? ` @${vpSize.dpr.toFixed(1)}x` : ''}
-          {` | q ${app.viewportQuality.scale.toFixed(2)} | ${app.rendererPerf?.fps ?? 0} fps | export ${app.patternSize}`}
+          {` | q ${app.viewportQuality.scale.toFixed(2)} | ${app.rendererPerf?.fps ?? 0} fps | live ${app.previewResolution} | export ${app.patternSize}`}
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
@@ -501,6 +567,10 @@ export function PreviewView() {
             compiled={app.previewShader}
             tile={app.tile}
             resolutionScale={app.previewResScale}
+            hiDpi={app.previewHiDpi}
+            renderEnabled={app.previewRenderEnabled}
+            paintMode={app.previewPaintEnabled}
+            paintBrush={app.previewPaintBrush}
             inlineErrors={false}
             onShaderError={app.onPreviewError}
             onResolutionChange={onVpResize}
@@ -825,17 +895,55 @@ export function AtomGraphView({ viewId }: { viewId: string }) {
 
 export function Preview3DView() {
   const app = useApp();
-  if (!app.preview3dReady) {
-    return (
-      <div style={{ width: '100%', height: '100%', background: '#1b2230', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12, letterSpacing: 0.4 }}>
-        Preparing 3D preview after node warmup...
-      </div>
-    );
-  }
   const surfaces = app.outputPreviewSurfaces;
+  const [sceneState, setSceneState] = useState(createDefaultPreview3DSharedSceneState);
+
+  const sharedProps = {
+    baseColorCanvas: surfaces?.baseColor?.canvas ?? null,
+    baseColorVersion: surfaces?.baseColor?.version ?? 0,
+    roughnessCanvas: surfaces?.roughness?.canvas ?? null,
+    roughnessVersion: surfaces?.roughness?.version ?? 0,
+    normalCanvas: surfaces?.normal?.canvas ?? null,
+    normalVersion: surfaces?.normal?.version ?? 0,
+    metallicCanvas: surfaces?.metallic?.canvas ?? null,
+    metallicVersion: surfaces?.metallic?.version ?? 0,
+    aoCanvas: surfaces?.ao?.canvas ?? null,
+    aoVersion: surfaces?.ao?.version ?? 0,
+    heightCanvas: surfaces?.height?.canvas ?? null,
+    heightVersion: surfaces?.height?.version ?? 0,
+    frameBudgetMs: app.previewFrameBudgetMs,
+    performanceMode: app.performanceMode,
+    onPerfSample: app.onViewportPerfSample,
+    onGpuFailure: app.onViewportGpuFailure,
+    sceneState,
+    setSceneState,
+  } as const;
 
   return (
-    <div style={{ width: '100%', height: '100%', background: '#1b2230' }}>
+    <div style={{ width: '100%', height: '100%', background: '#1b2230', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ height: 30, display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px', borderBottom: '1px solid #343c4c', flexShrink: 0 }}>
+        <span style={{ fontSize: 10, color: '#8fa0c2', fontWeight: 700, letterSpacing: 0.3 }}>Renderer</span>
+        <button
+          className="nt-btn-sm"
+          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          onClick={() => app.setPreview3dRenderer('three')}
+        >
+          {app.preview3dRenderer === 'three' ? 'Three Active' : 'Three'}
+        </button>
+        <button
+          className="nt-btn-sm"
+          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          onClick={() => app.setPreview3dRenderer('babylon')}
+        >
+          {app.preview3dRenderer === 'babylon' ? 'Babylon Active' : 'Babylon'}
+        </button>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: '#6f7f9e' }}>
+          {app.gpuCooling
+            ? (app.gpuSafetyMessage || 'GPU safety cooldown active')
+            : (app.preview3dRenderer === 'babylon' ? 'Babylon.js raster preview' : 'Three.js raster preview')}
+        </span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
       <React.Suspense
         fallback={
           <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12 }}>
@@ -843,21 +951,11 @@ export function Preview3DView() {
           </div>
         }
       >
-        <LazyViewport3D
-          baseColorCanvas={surfaces?.baseColor?.canvas ?? null}
-          baseColorVersion={surfaces?.baseColor?.version ?? 0}
-          roughnessCanvas={surfaces?.roughness?.canvas ?? null}
-          roughnessVersion={surfaces?.roughness?.version ?? 0}
-          normalCanvas={surfaces?.normal?.canvas ?? null}
-          normalVersion={surfaces?.normal?.version ?? 0}
-          metallicCanvas={surfaces?.metallic?.canvas ?? null}
-          metallicVersion={surfaces?.metallic?.version ?? 0}
-          heightCanvas={surfaces?.height?.canvas ?? null}
-          heightVersion={surfaces?.height?.version ?? 0}
-          frameBudgetMs={app.previewFrameBudgetMs}
-          performanceMode={app.performanceMode}
-        />
+        {app.preview3dRenderer === 'babylon'
+          ? <LazyViewport3DBabylon {...sharedProps} />
+          : <LazyViewport3D {...sharedProps} />}
       </React.Suspense>
+      </div>
     </div>
   );
 }
@@ -952,6 +1050,7 @@ export function CodeView() {
   const onRunQuick = useCallback(async () => { await app.runMonitorSuite('quick'); }, [app]);
   const onRunStress = useCallback(async () => { await app.runMonitorSuite('stress'); }, [app]);
   const history = useMemo(() => [...app.monitorRuns].reverse().slice(0, 20), [app.monitorRuns]);
+  const hasRenderSamples = !!app.rendererPerf && (app.stats.renderP95Ms ?? 0) > 0;
   const healthCards = useMemo(() => {
     const items = [
       {
@@ -966,8 +1065,8 @@ export function CodeView() {
       },
       {
         title: 'Performance',
-        severity: (app.stats.renderP95Ms ?? 0) > app.previewFrameBudgetMs + 8 ? 'fail' : (app.stats.renderP95Ms ?? 0) > app.previewFrameBudgetMs + 2 ? 'warn' : 'ok',
-        value: `p95 ${(app.stats.renderP95Ms ?? 0).toFixed(1)}ms`,
+        severity: !hasRenderSamples ? 'ok' : (app.stats.renderP95Ms ?? 0) > app.previewFrameBudgetMs + 8 ? 'fail' : (app.stats.renderP95Ms ?? 0) > app.previewFrameBudgetMs + 2 ? 'warn' : 'ok',
+        value: !hasRenderSamples ? 'No samples' : `p95 ${(app.stats.renderP95Ms ?? 0).toFixed(1)}ms`,
       },
       {
         title: 'Monitor',
@@ -976,7 +1075,7 @@ export function CodeView() {
       },
     ] as const;
     return items;
-  }, [app.compileError, app.stats.warnings.length, app.stats.renderP95Ms, app.previewFrameBudgetMs, latestWarn, recentRuntimeErrors.length, latestRun, latestRunSeverity, latestRunCheckCount]);
+  }, [app.compileError, app.stats.warnings.length, app.stats.renderP95Ms, app.previewFrameBudgetMs, hasRenderSamples, latestWarn, recentRuntimeErrors.length, latestRun, latestRunSeverity, latestRunCheckCount]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#232832' }}>
@@ -1060,7 +1159,7 @@ export function CodeView() {
             </div>
             <div style={{ padding: '6px 8px', fontSize: 11, color: '#b8c4e5', lineHeight: 1.7 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Compile</span><span>{app.stats.compileTimeMs.toFixed(2)} ms</span></div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Render p50 / p95</span><span>{(app.stats.renderP50Ms ?? 0).toFixed(2)} / {(app.stats.renderP95Ms ?? 0).toFixed(2)} ms</span></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Render p50 / p95</span><span>{hasRenderSamples ? `${(app.stats.renderP50Ms ?? 0).toFixed(2)} / ${(app.stats.renderP95Ms ?? 0).toFixed(2)} ms` : 'No samples'}</span></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Nodes / Edges</span><span>{app.stats.nodeCount} / {app.stats.edgeCount}</span></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Quality scale</span><span>{app.viewportQuality.scale.toFixed(2)}</span></div>
             </div>
@@ -1078,6 +1177,8 @@ export function CodeView() {
               {history.map((run) => {
                 const checks = Array.isArray((run as any).checks) ? (run as any).checks : [];
                 const metrics = (run as any).metrics || { renderP95Ms: 0 };
+                const performanceCheck = checks.find((check) => check.id === 'performance_budget');
+                const hasRunRenderSamples = (metrics.renderP95Ms ?? 0) > 0 && !performanceCheck?.message.startsWith('Skipped:');
                 return (
                   <div key={run.id} style={{ borderTop: '1px solid #2a3242', padding: '7px 9px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#c7d4f2', marginBottom: 4 }}>
@@ -1090,7 +1191,7 @@ export function CodeView() {
                       <span style={{ color: '#7f8db2' }}>{run.totalMs.toFixed(1)} ms</span>
                     </div>
                     <div style={{ fontSize: 10, color: '#8ea0c8', marginBottom: 4 }}>
-                      {new Date(run.ts).toLocaleString()} | p95 {(metrics.renderP95Ms ?? 0).toFixed(1)} ms
+                      {new Date(run.ts).toLocaleString()} | {hasRunRenderSamples ? `p95 ${(metrics.renderP95Ms ?? 0).toFixed(1)} ms` : 'p95 n/a'}
                     </div>
                     <div style={{ fontSize: 10, lineHeight: 1.45 }}>
                       {checks
@@ -1243,6 +1344,7 @@ export function ExplorerView() {
     roughness: getOutputNodeForChannel(app.graph, 'roughness'),
     normal: getOutputNodeForChannel(app.graph, 'normal'),
     metallic: getOutputNodeForChannel(app.graph, 'metallic'),
+    ao: getOutputNodeForChannel(app.graph, 'ao'),
     height: getOutputNodeForChannel(app.graph, 'height')
   }), [app.graph.nodes]);
   const nodeList = useMemo(() => {
@@ -1258,7 +1360,7 @@ export function ExplorerView() {
     );
   }, [app.graph.edges]);
   const outputMap = useMemo(() => resolveOutputChannels(app.graph), [app.graph.nodes, app.graph.edges]);
-  const outChannels: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'metallic', 'height'];
+  const outChannels: OutputChannel[] = ['baseColor', 'roughness', 'normal', 'metallic', 'ao', 'height'];
   const preset = useMemo(() => getExportPreset('pbr_default'), []);
 
   const selectNode = useCallback((nodeId: string) => {

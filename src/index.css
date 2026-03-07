@@ -1,25 +1,25 @@
 @import "tailwindcss";
 
 :root {
-  --nt-bg-0: #0f1622;
-  --nt-bg-1: #162133;
-  --nt-bg-2: #1b2a40;
-  --nt-bg-3: #223451;
-  --nt-bg-4: #2a3f62;
-  --nt-border-1: #2d4367;
-  --nt-border-2: #3f5f91;
-  --nt-accent: #26c6a4;
-  --nt-accent-weak: #26c6a433;
-  --nt-text-0: #f1f3f8;
-  --nt-text-1: #d8dce7;
-  --nt-text-2: #bcc3d4;
-  --nt-text-3: #8b93a6;
-  --nt-muted: #6b7283;
+  --nt-bg-0: #171819;
+  --nt-bg-1: #1e2023;
+  --nt-bg-2: #25282d;
+  --nt-bg-3: #2d3137;
+  --nt-bg-4: #383d45;
+  --nt-border-1: #3c4149;
+  --nt-border-2: #515862;
+  --nt-accent: #b5bac2;
+  --nt-accent-weak: #b5bac233;
+  --nt-text-0: #f3f4f6;
+  --nt-text-1: #d6d8dc;
+  --nt-text-2: #b6bac1;
+  --nt-text-3: #8b9098;
+  --nt-muted: #727780;
   --nt-danger: #ff6a6a;
 }
 
 html, body, #root {
-  background: radial-gradient(1200px 700px at 10% -15%, #173454 0%, transparent 42%), var(--nt-bg-0);
+  background: radial-gradient(1200px 700px at 10% -15%, #35383d 0%, transparent 42%), var(--nt-bg-0);
   color: var(--nt-text-1);
 }
 
@@ -95,10 +95,10 @@ html, body, #root {
   height: 1px;
 }
 .nt-splitter:hover::after {
-  background: #4a7ecf88;
+  background: #8f949c88;
 }
 .nt-splitter:active::after {
-  background: #4a7ecfcc;
+  background: #b0b5becc;
 }
 
 /* Toolbar / panel buttons */
@@ -116,7 +116,7 @@ html, body, #root {
 }
 .nt-btn:hover {
   background: var(--nt-bg-4);
-  border-color: #637696;
+  border-color: #707781;
   color: var(--nt-text-0);
 }
 .nt-btn:active {
@@ -149,7 +149,7 @@ html, body, #root {
 }
 .nt-select:hover {
   background: var(--nt-bg-4);
-  border-color: #637696;
+  border-color: #707781;
 }
 .nt-select:focus {
   border-color: var(--nt-accent);
@@ -227,7 +227,7 @@ html, body, #root {
 .nt-lib-tabs-wrap {
   border-bottom: 1px solid var(--nt-border-1);
   padding: 4px;
-  background: #252a34;
+  background: #232529;
 }
 .nt-lib-tabs {
   display: flex;
@@ -238,10 +238,10 @@ html, body, #root {
 }
 .nt-lib-tab {
   flex-shrink: 0;
-  border: 1px solid #3a4456;
+  border: 1px solid #464b53;
   border-radius: 999px;
-  background: #2a3040;
-  color: #aab5cf;
+  background: #2d3137;
+  color: #c0c4cb;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.35px;
@@ -254,10 +254,10 @@ html, body, #root {
 }
 .nt-lib-tab span {
   font-size: 8px;
-  color: #7b88a8;
+  color: #8b9098;
 }
 .nt-lib-tab:hover {
-  border-color: #61739a;
+  border-color: #777d86;
   color: #d8e0f3;
 }
 .nt-lib-tab.active {

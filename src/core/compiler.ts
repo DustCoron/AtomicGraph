@@ -8,7 +8,8 @@ import {
   hasDedicatedOutputNodeForChannel,
   resolveOutputChannels
 } from './output';
-import { ATOMS, WGSL_BASE_HELPERS } from './atoms';
+import { ATOMS } from './atoms';
+import { getCompiledWgsl, type WgslVariant } from '../shaders/compiled';
 
 export const COMPILER_BUILD = Date.now();
 
@@ -70,6 +71,7 @@ export class Compiler {
   private atomCse: Map<string, Map<string, Expr>> = new Map();
   private tempCounterByFunc: Map<string, number> = new Map();
   private atomInputExprStack: Expr[][] = [];
+  private wgslVariant: WgslVariant = 'hq';
 
   constructor(graph: GraphData) {
     this.graph = graph;
@@ -86,8 +88,10 @@ export class Compiler {
     nodeId?: string;
     nodeOutputPort?: number;
     backend?: ShaderBackend;
+    wgslVariant?: WgslVariant;
   }): CompiledShader {
     this.backend = options?.backend || 'glsl';
+    this.wgslVariant = options?.wgslVariant || 'hq';
     this.bindings = new ShaderBindings();
     this.uniformBindings = {};
     this.uniformDescriptors.clear();
@@ -196,6 +200,7 @@ export class Compiler {
     const usedAtoms = outExpr.atoms ?? new Set<string>();
     const atomsUsed = this.resolveAtomOrder(usedAtoms);
     const atomPrelude = this.emitAtomPrelude(usedAtoms);
+    const wgslPrelude = getCompiledWgsl(this.wgslVariant);
 
     const wgsl = `
 struct UBlock { data: array<vec4f, 64> };
@@ -218,7 +223,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VSOut {
   return out;
 }
 
-${WGSL_BASE_HELPERS}
+// WGSL-Plus prelude variant: ${this.wgslVariant}
+${wgslPrelude}
 
 ${atomPrelude}
 
@@ -336,6 +342,7 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
     const v3 = this.backend === 'wgsl' ? 'vec3f' : 'vec3';
     if (channel === 'baseColor') return { code: `${v3}(0.0)`, type: 'vec3' };
     if (channel === 'normal') return { code: `${v3}(0.5, 0.5, 1.0)`, type: 'vec3' };
+    if (channel === 'ao') return { code: '1.0', type: 'float' };
     return { code: '0.0', type: 'float' };
   }
 
@@ -1563,6 +1570,7 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
       case 'output_roughness': body = `return ${inp(0)};`; break;
       case 'output_height': body = `return ${inp(0)};`; break;
       case 'output_metallic': body = `return ${inp(0)};`; break;
+      case 'output_ao': body = `return ${inp(0)};`; break;
 
       default: body = `return 0.5;`; break;
     }

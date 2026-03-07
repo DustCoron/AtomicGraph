@@ -14,8 +14,6 @@ const FRAME_MIN_W = 180;
 const FRAME_MIN_H = 120;
 const FRAME_HEADER_H = 24;
 const RENDER_VISIBILITY_PADDING_PX = 220;
-const COMPACT_NODE_ZOOM = 0.72;
-const PREVIEW_TEXTURE_ZOOM = 1.05;
 
 const catColor = (t: string) => {
   const cat = NODE_REGISTRY[t]?.category;
@@ -192,6 +190,7 @@ interface GraphEditorProps {
   onCanvasClick?: () => void;
   onRequestContextMenu?: (req: GraphContextMenuRequest) => void;
   onVisibleNodeIdsChange?: (ids: string[]) => void;
+  onZoomChange?: (zoom: number) => void;
   nodePreviews?: Record<string, string>;
   nodeTimings?: Record<string, number>;
   viewCommandNonce?: number;
@@ -222,6 +221,7 @@ export function GraphEditor({
   onCanvasClick,
   onRequestContextMenu,
   onVisibleNodeIdsChange,
+  onZoomChange,
   nodePreviews,
   nodeTimings,
   viewCommandNonce,
@@ -378,6 +378,10 @@ export function GraphEditor({
   useEffect(() => () => {
     if (onVisibleNodeIdsChange) onVisibleNodeIdsChange([]);
   }, [onVisibleNodeIdsChange]);
+
+  useEffect(() => {
+    onZoomChange?.(zoom);
+  }, [onZoomChange, zoom]);
 
   useEffect(() => {
     if (!viewCommandType) return;
@@ -896,8 +900,6 @@ export function GraphEditor({
   const majorOy = ((pan.y % majorStep) + majorStep) % majorStep;
   const selNode = nodes.find(n => n.id === sel);
   const selFrame = frames.find((f) => f.id === selectedFrameId);
-  const useCompactNodeLod = zoom <= COMPACT_NODE_ZOOM;
-  const allowPreviewTextures = zoom >= PREVIEW_TEXTURE_ZOOM;
 
   return (
     <div ref={ref} style={{
@@ -1062,7 +1064,7 @@ export function GraphEditor({
         })}
         {renderedNodes.map((n) => {
           const isSelected = selectedSet.has(n.id);
-          const lodMode: 'full' | 'compact' = useCompactNodeLod && !isSelected && !conn ? 'compact' : 'full';
+          const lodMode: 'full' | 'compact' = 'full';
           return (
             <NodeCard
               key={n.id}
@@ -1075,7 +1077,7 @@ export function GraphEditor({
               connFromPort={conn?.fromPort}
               connFromType={conn?.fromType}
               snapTarget={conn && snapTarget?.nodeId === n.id ? snapTarget : null}
-              previewUrl={lodMode === 'full' && allowPreviewTextures ? nodePreviews?.[n.id] : undefined}
+              previewUrl={lodMode === 'full' ? nodePreviews?.[n.id] : undefined}
               compileMs={nodeTimings?.[n.id]}
               lodMode={lodMode}
               onDrag={startDrag}

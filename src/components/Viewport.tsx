@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CompiledShader, UniformLayoutEntry } from '../core/compiler';
 import { GPUQuadRenderer } from '../core/gpu-renderer';
+import { GPUTexturePainter, PaintBrushParams, PaintStrokePoint } from '../core/gpu-paint';
 import { appendAppLog } from '../core/logs';
 import { PerformanceMode, ViewportPerfSample, percentile } from '../core/perf';
 
@@ -14,6 +15,10 @@ interface ViewportProps {
   compiled: CompiledShader | null;
   tile: boolean;
   resolutionScale?: number;
+  hiDpi?: boolean;
+  renderEnabled?: boolean;
+  paintMode?: boolean;
+  paintBrush?: PaintBrushParams;
   inlineErrors?: boolean;
   onShaderError?: (message: string) => void;
   onResolutionChange?: (w: number, h: number, dpr: number) => void;
@@ -106,6 +111,10 @@ export function Viewport({
   compiled,
   tile,
   resolutionScale = 1,
+  hiDpi = true,
+  renderEnabled = true,
+  paintMode = false,
+  paintBrush = { radius: 18, hardness: 0.75, opacity: 1, spacing: 0.35, color: [1, 0.3, 0.2, 1], jitter: 0 },
   inlineErrors = true,
   onShaderError,
   onResolutionChange,
@@ -121,6 +130,7 @@ export function Viewport({
 
   const gpuRef = useRef<{
     renderer?: GPUQuadRenderer;
+    painter?: GPUTexturePainter;
     uniformBuf: Float32Array;
     lastShaderHash: string;
     pendingHash: string;
@@ -140,6 +150,7 @@ export function Viewport({
     frameHead: number;
     frameCount: number;
     frameId: number;
+    activeDpr: number;
     budgetExceededStreak: number;
     lastBudgetLogAt: number;
     compileMsLast: number;
@@ -163,6 +174,7 @@ export function Viewport({
     frameHead: 0,
     frameCount: 0,
     frameId: 0,
+    activeDpr: 1,
     compileFailCount: 0,
     compileFailUntil: 0,
     compileFailHash: '',
@@ -177,10 +189,18 @@ export function Viewport({
   const zoomRef = useRef(1);
   const offsetRef = useRef<[number, number]>([0, 0]);
   const draggingRef = useRef<{ x: number; y: number } | null>(null);
+  const paintStrokeActiveRef = useRef(false);
+  const paintLastPointRef = useRef<PaintStrokePoint | null>(null);
+  const paintQueueRef = useRef<PaintStrokePoint[]>([]);
+  const tickRef = useRef<(() => void) | null>(null);
   const propsRef = useRef({
     compiled,
     tile,
     resolutionScale,
+    hiDpi,
+    renderEnabled,
+    paintMode,
+    paintBrush,
     inlineErrors,
     onShaderError,
     onResolutionChange,
@@ -193,6 +213,10 @@ export function Viewport({
     compiled,
     tile,
     resolutionScale,
+    hiDpi,
+    renderEnabled,
+    paintMode,
+    paintBrush,
     inlineErrors,
     onShaderError,
     onResolutionChange,
@@ -212,7 +236,6 @@ export function Viewport({
     let lastCssH = 0;
     let lastDpr = 0;
     let lastScale = 0;
-
     const reportFatal = (message: string) => {
       const g = gpuRef.current;
       const hash = propsRef.current.compiled?.hash || g.lastShaderHash || '';
@@ -243,9 +266,16 @@ export function Viewport({
       gpuRef.current.t0 = performance.now();
 
       const tick = () => {
-        gpuRef.current.raf = requestAnimationFrame(tick);
         const g = gpuRef.current;
-        if (!g.renderer) return;
+        if (!g.renderer) {
+          g.raf = 0;
+          return;
+        }
+        if (!propsRef.current.renderEnabled) {
+          g.raf = 0;
+          return;
+        }
+        g.raf = requestAnimationFrame(tick);
         g.frameId += 1;
         const frameStarted = performance.now();
 
@@ -255,23 +285,29 @@ export function Viewport({
             propsRef.current.frameBudgetMs
           );
 
-          if (g.fatalHash && propsRef.current.compiled?.hash && g.fatalHash !== propsRef.current.compiled.hash) {
+          if (!propsRef.current.paintMode) {
+            if (g.fatalHash && propsRef.current.compiled?.hash && g.fatalHash !== propsRef.current.compiled.hash) {
+              g.fatalHash = '';
+              g.fatalMessage = '';
+              if (errRef.current) errRef.current.style.display = 'none';
+            }
+
+            if (g.fatalHash && (!propsRef.current.compiled || g.fatalHash === propsRef.current.compiled.hash)) {
+              return;
+            }
+          } else if (g.fatalHash || g.fatalMessage) {
             g.fatalHash = '';
             g.fatalMessage = '';
             if (errRef.current) errRef.current.style.display = 'none';
           }
 
-          if (g.fatalHash && (!propsRef.current.compiled || g.fatalHash === propsRef.current.compiled.hash)) {
-            return;
-          }
-
           const cssW = container.clientWidth;
           const cssH = container.clientHeight;
           const cssSize = Math.max(
-            MIN_BACKING / (window.devicePixelRatio || 1),
+            MIN_BACKING / (propsRef.current.hiDpi ? (window.devicePixelRatio || 1) : 1),
             Math.min(cssW || MIN_BACKING, cssH || MIN_BACKING)
           );
-          const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+          const dpr = propsRef.current.hiDpi ? Math.min(window.devicePixelRatio || 1, MAX_DPR) : 1;
           const scale = clamp(propsRef.current.resolutionScale, 0.1, 1);
 
           if (cssSize !== lastCssW || cssSize !== lastCssH || dpr !== lastDpr || scale !== lastScale) {
@@ -285,102 +321,120 @@ export function Viewport({
             lastCssH = cssSize;
             lastDpr = dpr;
             lastScale = scale;
+            g.activeDpr = dpr;
             propsRef.current.onResolutionChange?.(backing, backing, dpr);
-          }
-
-          const c = propsRef.current.compiled;
-          if (
-            c
-            && c.wgsl
-            && c.hash !== g.lastShaderHash
-            && c.hash !== g.pendingHash
-            && !(c.hash === g.compileFailHash && g.compileFailUntil > performance.now())
-          ) {
-            if (g.compileFailHash !== c.hash) {
-              g.compileFailHash = '';
-              g.compileFailUntil = 0;
-              g.compileFailCount = 0;
-            }
-            g.pendingHash = c.hash;
-            const requestedHash = c.hash;
-            g.renderer.setPipelineAsync(c.wgsl, c.hash).then(result => {
-              const gNow = gpuRef.current;
-              gNow.pendingHash = '';
-              gNow.compileMsLast = result.compileMs ?? gNow.compileMsLast;
-              const currentCompiled = propsRef.current.compiled;
-              if (!gNow.renderer || (currentCompiled && requestedHash !== currentCompiled.hash)) return;
-              if (result.ok) {
-                gNow.lastShaderHash = requestedHash;
-                gNow.compileFailCount = 0;
-                gNow.compileFailUntil = 0;
-                gNow.compileFailHash = '';
-                gNow.lastStaticRenderKey = '';
-                gNow.fatalHash = '';
-                gNow.fatalMessage = '';
-                if (errRef.current) errRef.current.style.display = 'none';
-                propsRef.current.onShaderError?.('');
-              } else {
-                gNow.lastShaderHash = '';
-                gNow.lastStaticRenderKey = '';
-                gNow.compileFailHash = requestedHash;
-                gNow.compileFailCount = Math.min(gNow.compileFailCount + 1, 12);
-                const retryDelay = Math.min(
-                  INITIAL_COMPILE_RETRY_MS * Math.pow(2, Math.min(gNow.compileFailCount - 1, 8)),
-                  MAX_COMPILE_RETRY_MS,
-                );
-                gNow.compileFailUntil = performance.now() + retryDelay;
-                const firstErr = result.diagnostics?.find((m) => m.type === 'error');
-                const lineLoc = firstErr ? `line ${firstErr.lineNum}, col ${firstErr.linePos}` : null;
-                const nodeRef = firstErr ? findNodeRefFromWgsl(c.wgsl!, firstErr.lineNum) : null;
-                const details = result.error || 'WGSL pipeline compilation failed.';
-                const uiMessage = [
-                  'Shader compilation error',
-                  lineLoc ? `at ${lineLoc}` : null,
-                  nodeRef ? `(${nodeRef})` : null,
-                  details
-                ].filter(Boolean).join(' - ');
-                showError(errRef.current, propsRef.current.inlineErrors, uiMessage);
-                propsRef.current.onShaderError?.(uiMessage);
-              }
-            });
-          }
-
-          let shouldRender = g.renderer.isReady;
-          if (shouldRender && c && c.uniformLayout) {
-            const uniformSignature = buildUniformSignature(c);
-            if (g.cachedShaderHash !== c.hash || g.cachedUniformSignature !== uniformSignature) {
-              g.cachedShaderHash = c.hash;
-              g.cachedUniformSignature = uniformSignature;
-              g.cachedUsesTime = resolveUsesTime(c);
-              g.cachedStaticRenderTemplate = buildStaticRenderTemplate(c, g.cachedUniformSignature);
-            }
-            const usesTime = g.cachedUsesTime;
-            const staticRenderKey = buildStaticRenderKey(
-              g.cachedStaticRenderTemplate,
-              g.backingW,
-              g.backingH,
-              zoomRef.current,
-              offsetRef.current,
-              propsRef.current.tile,
-            );
-            if (!usesTime && g.lastStaticRenderKey === staticRenderKey) {
-              shouldRender = false;
-            } else {
-              const now = performance.now();
-              fillUniformBuffer(g.uniformBuf, c, g.backingW, g.backingH, now - g.t0, zoomRef.current, offsetRef.current, propsRef.current.tile);
-              g.renderer.writeUniforms(g.uniformBuf);
-              g.lastStaticRenderKey = usesTime ? '' : staticRenderKey;
-            }
           }
 
           let renderMs = 0;
           let readbackMs = 0;
-          if (shouldRender) {
-            const renderResult = g.renderer.render();
-            renderMs = renderResult.renderMs;
-            if (!renderResult.ok && renderResult.error && renderResult.error !== 'Pipeline not ready') {
-              reportFatal(`Viewport render error: ${renderResult.error}`);
+          if (propsRef.current.paintMode) {
+            if (!g.painter) {
+              g.painter = new GPUTexturePainter(g.renderer);
+            }
+            g.painter.ensureSize(g.backingW || MIN_BACKING, g.backingH || MIN_BACKING);
+            if (paintQueueRef.current.length > 0) {
+              const points = paintQueueRef.current.splice(0, paintQueueRef.current.length);
+              g.painter.queueStroke(points, propsRef.current.paintBrush);
+            }
+            const paintResult = g.painter.render();
+            renderMs = paintResult.renderMs;
+            if (!paintResult.ok && paintResult.error) {
+              reportFatal(`Paint render error: ${paintResult.error}`);
               return;
+            }
+          } else {
+            const c = propsRef.current.compiled;
+            if (
+              c
+              && c.wgsl
+              && c.hash !== g.lastShaderHash
+              && c.hash !== g.pendingHash
+              && !(c.hash === g.compileFailHash && g.compileFailUntil > performance.now())
+            ) {
+              if (g.compileFailHash !== c.hash) {
+                g.compileFailHash = '';
+                g.compileFailUntil = 0;
+                g.compileFailCount = 0;
+              }
+              g.pendingHash = c.hash;
+              const requestedHash = c.hash;
+              g.renderer.setPipelineAsync(c.wgsl, c.hash).then(result => {
+                const gNow = gpuRef.current;
+                gNow.pendingHash = '';
+                gNow.compileMsLast = result.compileMs ?? gNow.compileMsLast;
+                const currentCompiled = propsRef.current.compiled;
+                if (!gNow.renderer || (currentCompiled && requestedHash !== currentCompiled.hash)) return;
+                if (result.ok) {
+                  gNow.lastShaderHash = requestedHash;
+                  gNow.compileFailCount = 0;
+                  gNow.compileFailUntil = 0;
+                  gNow.compileFailHash = '';
+                  gNow.lastStaticRenderKey = '';
+                  gNow.fatalHash = '';
+                  gNow.fatalMessage = '';
+                  if (errRef.current) errRef.current.style.display = 'none';
+                  propsRef.current.onShaderError?.('');
+                } else {
+                  gNow.lastShaderHash = '';
+                  gNow.lastStaticRenderKey = '';
+                  gNow.compileFailHash = requestedHash;
+                  gNow.compileFailCount = Math.min(gNow.compileFailCount + 1, 12);
+                  const retryDelay = Math.min(
+                    INITIAL_COMPILE_RETRY_MS * Math.pow(2, Math.min(gNow.compileFailCount - 1, 8)),
+                    MAX_COMPILE_RETRY_MS,
+                  );
+                  gNow.compileFailUntil = performance.now() + retryDelay;
+                  const firstErr = result.diagnostics?.find((m) => m.type === 'error');
+                  const lineLoc = firstErr ? `line ${firstErr.lineNum}, col ${firstErr.linePos}` : null;
+                  const nodeRef = firstErr ? findNodeRefFromWgsl(c.wgsl!, firstErr.lineNum) : null;
+                  const details = result.error || 'WGSL pipeline compilation failed.';
+                  const uiMessage = [
+                    'Shader compilation error',
+                    lineLoc ? `at ${lineLoc}` : null,
+                    nodeRef ? `(${nodeRef})` : null,
+                    details
+                  ].filter(Boolean).join(' - ');
+                  showError(errRef.current, propsRef.current.inlineErrors, uiMessage);
+                  propsRef.current.onShaderError?.(uiMessage);
+                }
+              });
+            }
+
+            let shouldRender = g.renderer.isReady;
+            if (shouldRender && c && c.uniformLayout) {
+              const uniformSignature = buildUniformSignature(c);
+              if (g.cachedShaderHash !== c.hash || g.cachedUniformSignature !== uniformSignature) {
+                g.cachedShaderHash = c.hash;
+                g.cachedUniformSignature = uniformSignature;
+                g.cachedUsesTime = resolveUsesTime(c);
+                g.cachedStaticRenderTemplate = buildStaticRenderTemplate(c, g.cachedUniformSignature);
+              }
+              const usesTime = g.cachedUsesTime;
+              const staticRenderKey = buildStaticRenderKey(
+                g.cachedStaticRenderTemplate,
+                g.backingW,
+                g.backingH,
+                zoomRef.current,
+                offsetRef.current,
+                propsRef.current.tile,
+              );
+              if (!usesTime && g.lastStaticRenderKey === staticRenderKey) {
+                shouldRender = false;
+              } else {
+                const now = performance.now();
+                fillUniformBuffer(g.uniformBuf, c, g.backingW, g.backingH, now - g.t0, zoomRef.current, offsetRef.current, propsRef.current.tile);
+                g.renderer.writeUniforms(g.uniformBuf);
+                g.lastStaticRenderKey = usesTime ? '' : staticRenderKey;
+              }
+            }
+
+            if (shouldRender) {
+              const renderResult = g.renderer.render();
+              renderMs = renderResult.renderMs;
+              if (!renderResult.ok && renderResult.error && renderResult.error !== 'Pipeline not ready') {
+                reportFatal(`Viewport render error: ${renderResult.error}`);
+                return;
+              }
             }
           }
 
@@ -432,29 +486,100 @@ export function Viewport({
           reportFatal(`Viewport fatal tick error: ${msg}`);
         }
       };
-      gpuRef.current.raf = requestAnimationFrame(tick);
+      tickRef.current = tick;
+      if (propsRef.current.renderEnabled) {
+        gpuRef.current.raf = requestAnimationFrame(tick);
+      }
     })();
 
     const onWheel = (ev: WheelEvent) => {
       ev.preventDefault();
       zoomRef.current = clamp(zoomRef.current + (ev.deltaY > 0 ? -0.1 : 0.1), 0.3, 5);
     };
-    const onMouseDown = (ev: MouseEvent) => { draggingRef.current = { x: ev.clientX, y: ev.clientY }; };
+
+    const toStrokePoint = (clientX: number, clientY: number, pressure = 1): PaintStrokePoint | null => {
+      const rect = cv.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const sx = (clientX - rect.left) / rect.width;
+      const sy = 1 - (clientY - rect.top) / rect.height;
+      const rawU = (sx - 0.5) / Math.max(zoomRef.current, 0.0001) + 0.5 + offsetRef.current[0];
+      const rawV = (sy - 0.5) / Math.max(zoomRef.current, 0.0001) + 0.5 + offsetRef.current[1];
+      return {
+        u: clamp(rawU, 0, 1),
+        v: clamp(rawV, 0, 1),
+        pressure: clamp(pressure || 1, 0.05, 1),
+      };
+    };
+
+    const enqueueInterpolatedPoint = (next: PaintStrokePoint) => {
+      const prev = paintLastPointRef.current;
+      if (!prev) {
+        paintQueueRef.current.push(next);
+        paintLastPointRef.current = next;
+        return;
+      }
+      const bw = Math.max(1, gpuRef.current.backingW || cv.width || 1);
+      const bh = Math.max(1, gpuRef.current.backingH || cv.height || 1);
+      const distPx = Math.hypot((next.u - prev.u) * bw, (next.v - prev.v) * bh);
+      const spacingPx = Math.max(1, propsRef.current.paintBrush.radius * Math.max(0.05, propsRef.current.paintBrush.spacing));
+      const steps = Math.max(1, Math.floor(distPx / spacingPx));
+      for (let i = 1; i <= steps; i += 1) {
+        const t = i / steps;
+        paintQueueRef.current.push({
+          u: prev.u + (next.u - prev.u) * t,
+          v: prev.v + (next.v - prev.v) * t,
+          pressure: prev.pressure! + (next.pressure! - prev.pressure!) * t,
+        });
+      }
+      paintLastPointRef.current = next;
+    };
+
+    const onMouseDown = (ev: MouseEvent) => {
+      if (propsRef.current.paintMode) return;
+      draggingRef.current = { x: ev.clientX, y: ev.clientY };
+    };
     const onMouseMove = (ev: MouseEvent) => {
+      if (propsRef.current.paintMode) return;
       if (!draggingRef.current) return;
       const dx = ev.clientX - draggingRef.current.x;
       const dy = ev.clientY - draggingRef.current.y;
       draggingRef.current = { x: ev.clientX, y: ev.clientY };
       const bw = gpuRef.current.backingW || 512;
+      const dpr = gpuRef.current.activeDpr || 1;
       offsetRef.current = [
-        offsetRef.current[0] - dx / (bw * zoomRef.current) * (window.devicePixelRatio || 1),
-        offsetRef.current[1] + dy / (bw * zoomRef.current) * (window.devicePixelRatio || 1),
+        offsetRef.current[0] - dx / (bw * zoomRef.current) * dpr,
+        offsetRef.current[1] + dy / (bw * zoomRef.current) * dpr,
       ];
     };
     const onMouseUp = () => { draggingRef.current = null; };
 
+    const onPointerDown = (ev: PointerEvent) => {
+      if (!propsRef.current.paintMode || ev.button !== 0) return;
+      const p = toStrokePoint(ev.clientX, ev.clientY, ev.pressure);
+      if (!p) return;
+      paintStrokeActiveRef.current = true;
+      paintLastPointRef.current = p;
+      paintQueueRef.current.push(p);
+      ev.preventDefault();
+    };
+    const onPointerMove = (ev: PointerEvent) => {
+      if (!paintStrokeActiveRef.current) return;
+      const p = toStrokePoint(ev.clientX, ev.clientY, ev.pressure);
+      if (!p) return;
+      enqueueInterpolatedPoint(p);
+      ev.preventDefault();
+    };
+    const onPointerUp = () => {
+      paintStrokeActiveRef.current = false;
+      paintLastPointRef.current = null;
+    };
+
     cv.addEventListener('wheel', onWheel, { passive: false });
     cv.addEventListener('mousedown', onMouseDown);
+    cv.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
 
@@ -462,12 +587,38 @@ export function Viewport({
       cancelled = true;
       cv.removeEventListener('wheel', onWheel);
       cv.removeEventListener('mousedown', onMouseDown);
+      cv.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
       cancelAnimationFrame(gpuRef.current.raf);
+      tickRef.current = null;
+      paintQueueRef.current = [];
+      paintStrokeActiveRef.current = false;
+      paintLastPointRef.current = null;
+      gpuRef.current.painter?.dispose();
+      gpuRef.current.painter = undefined;
       gpuRef.current.renderer?.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    const g = gpuRef.current;
+    if (!renderEnabled) {
+      if (g.raf) {
+        cancelAnimationFrame(g.raf);
+        g.raf = 0;
+      }
+      return;
+    }
+    if (!g.renderer) return;
+    if (!g.raf && tickRef.current) {
+      g.lastStaticRenderKey = '';
+      g.raf = requestAnimationFrame(tickRef.current);
+    }
+  }, [renderEnabled, hiDpi, resolutionScale, tile, compiled?.hash, paintMode]);
 
   useEffect(() => {
     const host = containerRef.current;
@@ -489,7 +640,7 @@ export function Viewport({
       </div>
       <div ref={errRef} style={{ display: 'none', position: 'absolute', bottom: 8, left: 8, right: 8, background: '#2a0c0c', border: '1px solid #a43333', color: '#ffadad', fontSize: 10, padding: '6px 8px', borderRadius: 4 }} />
       <div style={{ position: 'absolute', bottom: 8, right: 10, fontSize: 9, color: '#5f6882' }}>
-        WebGPU | Wheel: zoom | Drag: pan
+        {paintMode ? 'Paint: LMB stroke' : 'WebGPU'} | Wheel: zoom | Drag: pan
       </div>
     </div>
   );
