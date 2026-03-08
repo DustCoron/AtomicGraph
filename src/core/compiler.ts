@@ -697,7 +697,7 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
     if (!node) return { code: '0.0', type: 'float' };
 
     const def = NODE_REGISTRY[node.type];
-    const outType = def?.outputs[outputPort]?.type || 'float';
+    let outType: DataType = def?.outputs[outputPort]?.type || 'float';
 
     const cacheKey = `${nodeId}:${outputPort}`;
     const cachedExpr = this.funcExprs.get(cacheKey);
@@ -1146,7 +1146,28 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
       case 'atan2node': body = `return (${this.atan2F(inp(0, 'uv.y - 0.5'), inp(1, 'uv.x - 0.5'))} / 3.14159 + 1.0) * 0.5;`; break;
 
       // INTERP
-      case 'lerp': body = `return mix(${inp(0)}, ${inp(1, '1.0')}, clamp(${inp(2, uni('t', p.t))}, 0.0, 1.0));`; break;
+      case 'lerp': {
+        const aProbe = this.getSource(nodeId, 0, 'uv', '0.0', 'float');
+        const bProbe = this.getSource(nodeId, 1, 'uv', '1.0', 'float');
+        this.mergeExprAtoms(localAtoms, aProbe);
+        this.mergeExprAtoms(localAtoms, bProbe);
+        const t = `clamp(${inp(2, uni('t', p.t))}, 0.0, 1.0)`;
+
+        const vec3Mode = aProbe.type === 'vec3' || aProbe.type === 'vec4' || bProbe.type === 'vec3' || bProbe.type === 'vec4';
+        const vec2Mode = !vec3Mode && (aProbe.type === 'vec2' || bProbe.type === 'vec2');
+        if (vec3Mode) {
+          outType = 'vec3';
+          const tv = this.v3(`${t}, ${t}, ${t}`);
+          body = `return mix(${inp3(0, this.W ? 'vec3f(0.0)' : 'vec3(0.0)')}, ${inp3(1, this.W ? 'vec3f(1.0)' : 'vec3(1.0)')}, ${tv});`;
+        } else if (vec2Mode) {
+          outType = 'vec2';
+          const tv = this.v2(`${t}, ${t}`);
+          body = `return mix(${inp2(0, this.W ? 'vec2f(0.0)' : 'vec2(0.0)')}, ${inp2(1, this.W ? 'vec2f(1.0)' : 'vec2(1.0)')}, ${tv});`;
+        } else {
+          body = `return mix(${inp(0)}, ${inp(1, '1.0')}, ${t});`;
+        }
+        break;
+      }
       case 'smoothstep': body = `return smoothstep(${uni('lo', p.lo)}, ${uni('hi', p.hi)}, ${inp(0, 'uv.x')});`; break;
       case 'step': body = `return step(${inp(0, uni('e', p.edge))}, ${inp(1, 'uv.x')});`; break;
       case 'ifgt': body = `return ${this.sel(`(${inp(0)}) > (${inp(1, uni('b', p.b))})`, inp(2, '1.0'), inp(3, '0.0'))};`; break;

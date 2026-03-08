@@ -116,8 +116,10 @@ export interface AppContextValue {
   onPinPreview: (nodeId: string | null) => void;
   previewFrameBudgetMs: number;
   preview3dReady: boolean;
+  preview3dRenderEnabled: boolean;
   preview3dRenderer: 'three' | 'babylon';
   setPreview3dRenderer: (renderer: 'three' | 'babylon') => void;
+  onTogglePreview3dRenderEnabled: () => void;
   performanceMode: PerformanceMode;
   viewportQuality: ViewportQualityState;
   rendererPerf: RendererPerfSample | null;
@@ -926,6 +928,14 @@ export function Preview3DView() {
         <button
           className="nt-btn-sm"
           style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          onClick={app.onTogglePreview3dRenderEnabled}
+        >
+          {app.preview3dRenderEnabled ? '3D On' : '3D Off'}
+        </button>
+        <button
+          className="nt-btn-sm"
+          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          disabled={!app.preview3dRenderEnabled}
           onClick={() => app.setPreview3dRenderer('three')}
         >
           {app.preview3dRenderer === 'three' ? 'Three Active' : 'Three'}
@@ -933,28 +943,37 @@ export function Preview3DView() {
         <button
           className="nt-btn-sm"
           style={{ height: 20, padding: '0 7px', fontSize: 9 }}
+          disabled={!app.preview3dRenderEnabled}
           onClick={() => app.setPreview3dRenderer('babylon')}
         >
           {app.preview3dRenderer === 'babylon' ? 'Babylon Active' : 'Babylon'}
         </button>
         <span style={{ marginLeft: 'auto', fontSize: 10, color: '#6f7f9e' }}>
-          {app.gpuCooling
+          {!app.preview3dRenderEnabled
+            ? '3D rendering disabled'
+            : app.gpuCooling
             ? (app.gpuSafetyMessage || 'GPU safety cooldown active')
             : (app.preview3dRenderer === 'babylon' ? 'Babylon.js raster preview' : 'Three.js raster preview')}
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-      <React.Suspense
-        fallback={
-          <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12 }}>
-            Loading 3D module...
-          </div>
-        }
-      >
-        {app.preview3dRenderer === 'babylon'
-          ? <LazyViewport3DBabylon {...sharedProps} />
-          : <LazyViewport3D {...sharedProps} />}
-      </React.Suspense>
+      {app.preview3dRenderEnabled ? (
+        <React.Suspense
+          fallback={
+            <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12 }}>
+              Loading 3D module...
+            </div>
+          }
+        >
+          {app.preview3dRenderer === 'babylon'
+            ? <LazyViewport3DBabylon {...sharedProps} />
+            : <LazyViewport3D {...sharedProps} />}
+        </React.Suspense>
+      ) : (
+        <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12 }}>
+          3D render is turned off.
+        </div>
+      )}
       </div>
     </div>
   );

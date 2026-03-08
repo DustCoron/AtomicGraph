@@ -77,6 +77,8 @@ function Param({ pk, val, meta, nodeId, onUpdate }: ParamProps) {
 interface NodeCardProps {
   node: NodeData;
   edges: EdgeData[];
+  connectedInputPorts?: ReadonlySet<number>;
+  connectedOutputPorts?: ReadonlySet<number>;
   allNodes?: NodeData[];
   isSel: boolean;
   isConn: boolean;
@@ -229,7 +231,7 @@ function RemoteCard({ node, allNodes, isSel, onDrag, onUpdate, onDelete, onSelec
   );
 }
 
-export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connFromPort, connFromType, snapTarget, onDrag, onOut, onIn, onUpdate, onDelete, onSelect, onOpen, previewUrl, compileMs, lodMode = 'full' }: NodeCardProps) {
+export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPorts, allNodes, isSel, isConn, connFrom, connFromPort, connFromType, snapTarget, onDrag, onOut, onIn, onUpdate, onDelete, onSelect, onOpen, previewUrl, compileMs, lodMode = 'full' }: NodeCardProps) {
   const def = NODE_REGISTRY[node.type];
   if (!def) return null;
   const compact = lodMode === 'compact' && !isSel && !isConn;
@@ -307,7 +309,9 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
       </div>
       )}
       {!compact && def.inputs.map((port, i) => {
-        const connected = edges.some(e => e.toId === node.id && e.toPort === i);
+        const connected = connectedInputPorts
+          ? connectedInputPorts.has(i)
+          : edges.some(e => e.toId === node.id && e.toPort === i);
         const isSelf = connFrom === node.id;
         const isSnapped = snapTarget?.portIndex === i;
         const compat = isConn && !isSelf ? portCompat(connFromType, port.type as DataType) : null;
@@ -363,7 +367,9 @@ export function NodeCard({ node, edges, allNodes, isSel, isConn, connFrom, connF
       ))}
       {!compact && !isOutputNodeType(node.type) && def.outputs && def.outputs.length > 1 && def.outputs.map((port, i) => {
         const portTypeColor = dataTypeColor(port.type as DataType);
-        const connected = edges.some(e => e.fromId === node.id && e.fromPort === i);
+        const connected = connectedOutputPorts
+          ? connectedOutputPorts.has(i)
+          : edges.some(e => e.fromId === node.id && e.fromPort === i);
         return (
           <div key={i} style={{ position: "relative", height: ROW, display: "flex", alignItems: "center" }}>
             <span style={{ marginLeft: 13, fontSize: 10, color: "#e2e8f0", letterSpacing: .8, flex: 1 }}>{port.label}</span>

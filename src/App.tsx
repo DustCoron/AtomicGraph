@@ -34,47 +34,46 @@ import { useWorkspace } from './workspace/store';
 import { collectPanels } from './workspace/types';
 import { AppContext, AppContextValue, OutputPreviewSurface, PreviewTargetInfo, renderViewByType } from './workspace/views';
 
+// Stable startup example (approved): see docs/startup-example-notes.md
 const INIT_DATA: GraphData = {
-  schemaVersion: 1,
-  resolution: 256,
+  schemaVersion: SCHEMA_VERSION,
+  resolution: 512,
   nodes: [
-    { id: 'out_base', type: 'output_baseColor', x: 1664, y: 104, params: {} },
-    { id: 'out_rough', type: 'output_roughness', x: 1664, y: 304, params: {} },
-    { id: 'out_normal', type: 'output_normal', x: 1664, y: 504, params: {} },
-    { id: 'out_metal', type: 'output_metallic', x: 1664, y: 704, params: {} },
-    { id: 'out_ao', type: 'output_ao', x: 1664, y: 904, params: {} },
-    { id: 'out_height', type: 'output_height', x: 1664, y: 1104, params: {} },
+    { id: 'out_base', type: 'output_baseColor', x: 1450, y: 80, params: {} },
+    { id: 'out_rough', type: 'output_roughness', x: 1450, y: 250, params: {} },
+    { id: 'out_normal', type: 'output_normal', x: 1450, y: 420, params: {} },
+    { id: 'out_metal', type: 'output_metallic', x: 1450, y: 590, params: {} },
+    { id: 'out_ao', type: 'output_ao', x: 1450, y: 760, params: {} },
+    { id: 'out_height', type: 'output_height', x: 1450, y: 930, params: {} },
 
-    { id: 'base_color', type: 'uniform_color', x: 80, y: 90, params: { r: 0.16, g: 0.26, b: 0.36 } },
-    { id: 'spots_main', type: 'bnw_spots2_v2', x: 80, y: 380, params: {
-      scale: 16, tileOffsetX: 0.0, tileOffsetY: 0.0, seed: 4242,
-      nonSquareExpansion: true, grainAmount: 0.2, grainThreshold: 0.88, contrast: 1.1
-    } },
-    { id: 'transform_spots', type: 'transform_2d', x: 384, y: 380, params: { offsetX: 0.02, offsetY: -0.01, rotation: 14.0, scale: 1.08, tile: true } },
-    { id: 'safe_spots', type: 'safe_transform', x: 688, y: 380, params: { offsetX: 0.0, offsetY: 0.0, scale: 1.0, tile: false } },
-    { id: 'histogram_height', type: 'histogram_range', x: 992, y: 380, params: { inMin: 0.08, inMax: 0.92, outMin: 0.0, outMax: 1.0 } },
-    { id: 'levels_main', type: 'levels', x: 1296, y: 380, params: { inMin: 0.03, inMax: 0.97, gamma: 0.9 } },
-    { id: 'highpass_rough', type: 'highpass_grayscale', x: 1296, y: 612, params: { radius: 1.6, intensity: 1.25 } },
-    { id: 'normal_from_height', type: 'height_to_normal', x: 1296, y: 844, params: { strength: 2.0, radius: 1.0, flipY: false } },
-    { id: 'normal_finalize', type: 'normal_normalize', x: 1504, y: 844, params: { flipY: false } },
+    { id: 'base_color', type: 'uniform_color', x: 80, y: 90, params: { r: 0.32, g: 0.28, b: 0.24 } },
+    { id: 'macro_noise', type: 'perlin', x: 80, y: 320, params: { scale: 7.0, seed: 91, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
+    { id: 'height_shape', type: 'histogram_range', x: 360, y: 320, params: { inMin: 0.14, inMax: 0.86, outMin: 0.0, outMax: 1.0 } },
+    { id: 'height_levels', type: 'levels', x: 620, y: 320, params: { inMin: 0.04, inMax: 0.96, gamma: 0.92 } },
+    { id: 'rough_highpass', type: 'highpass_grayscale', x: 620, y: 520, params: { radius: 1.4, intensity: 1.15 } },
+    { id: 'normal_from_height', type: 'height_to_normal', x: 900, y: 320, params: { strength: 1.8, radius: 1.0, flipY: false } },
+    { id: 'normal_fix', type: 'normal_normalize', x: 1160, y: 320, params: { flipY: false } },
+    { id: 'metal_value', type: 'constant', x: 620, y: 700, params: { value: 0.06 } },
+    { id: 'ao_from_rough', type: 'oneminus', x: 900, y: 520, params: {} },
   ],
   edges: [
-    { id: 'e1', fromId: 'spots_main', fromPort: 0, toId: 'transform_spots', toPort: 0 },
-    { id: 'e2', fromId: 'transform_spots', fromPort: 0, toId: 'safe_spots', toPort: 0 },
-    { id: 'e3', fromId: 'safe_spots', fromPort: 0, toId: 'histogram_height', toPort: 0 },
-    { id: 'e4', fromId: 'histogram_height', fromPort: 0, toId: 'levels_main', toPort: 0 },
-    { id: 'e5', fromId: 'levels_main', fromPort: 0, toId: 'highpass_rough', toPort: 0 },
-    { id: 'e6', fromId: 'levels_main', fromPort: 0, toId: 'normal_from_height', toPort: 0 },
-    { id: 'e7', fromId: 'normal_from_height', fromPort: 0, toId: 'normal_finalize', toPort: 0 },
-    { id: 'e8', fromId: 'normal_finalize', fromPort: 0, toId: 'out_normal', toPort: 0 },
-    { id: 'e9', fromId: 'levels_main', fromPort: 0, toId: 'out_height', toPort: 0 },
-    { id: 'e10', fromId: 'highpass_rough', fromPort: 0, toId: 'out_rough', toPort: 0 },
-    { id: 'e11', fromId: 'levels_main', fromPort: 0, toId: 'out_metal', toPort: 0 },
-    { id: 'e12', fromId: 'base_color', fromPort: 0, toId: 'out_base', toPort: 0 },
-    { id: 'e13', fromId: 'highpass_rough', fromPort: 0, toId: 'out_ao', toPort: 0 }
+    { id: 'e1', fromId: 'macro_noise', fromPort: 0, toId: 'height_shape', toPort: 0 },
+    { id: 'e2', fromId: 'height_shape', fromPort: 0, toId: 'height_levels', toPort: 0 },
+    { id: 'e3', fromId: 'height_levels', fromPort: 0, toId: 'out_height', toPort: 0 },
+    { id: 'e4', fromId: 'height_levels', fromPort: 0, toId: 'rough_highpass', toPort: 0 },
+    { id: 'e5', fromId: 'rough_highpass', fromPort: 0, toId: 'out_rough', toPort: 0 },
+    { id: 'e6', fromId: 'rough_highpass', fromPort: 0, toId: 'ao_from_rough', toPort: 0 },
+    { id: 'e7', fromId: 'ao_from_rough', fromPort: 0, toId: 'out_ao', toPort: 0 },
+    { id: 'e8', fromId: 'height_levels', fromPort: 0, toId: 'normal_from_height', toPort: 0 },
+    { id: 'e9', fromId: 'normal_from_height', fromPort: 0, toId: 'normal_fix', toPort: 0 },
+    { id: 'e10', fromId: 'normal_fix', fromPort: 0, toId: 'out_normal', toPort: 0 },
+    { id: 'e11', fromId: 'base_color', fromPort: 0, toId: 'out_base', toPort: 0 },
+    { id: 'e12', fromId: 'metal_value', fromPort: 0, toId: 'out_metal', toPort: 0 }
   ],
   frames: [
-    { id: 'fr_outputs', x: 1608, y: 52, width: 344, height: 1172, label: 'Outputs', color: '#4d78bc' }
+    { id: 'fr_material', x: 40, y: 40, width: 360, height: 170, label: 'Material Inputs', color: '#4d78bc' },
+    { id: 'fr_height', x: 40, y: 260, width: 1320, height: 560, label: 'Height Pipeline', color: '#2f9e7f' },
+    { id: 'fr_outputs', x: 1390, y: 40, width: 320, height: 1020, label: 'Outputs', color: '#a97b2c' }
   ]
 };
 
@@ -88,15 +87,19 @@ const DEFAULT_GRID_SNAP = 32;
 const AUTOSAVE_KEY = 'atomicgraph.autosave.v1';
 const PREVIEW_HIDPI_KEY = 'atomicgraph.preview.hidpi';
 const PREVIEW_RENDER_ENABLED_KEY = 'atomicgraph.preview.render.enabled';
+const PREVIEW_3D_RENDER_ENABLED_KEY = 'atomicgraph.preview3d.render.enabled';
 const PREVIEW_3D_RENDERER_KEY = 'atomicgraph.preview3d.renderer';
 const PREVIEW_PAINT_ENABLED_KEY = 'atomicgraph.preview.paint.enabled';
 const PREVIEW_PAINT_RADIUS_KEY = 'atomicgraph.preview.paint.radius';
 const PREVIEW_PAINT_COLOR_KEY = 'atomicgraph.preview.paint.color';
-const PREVIEW_WARMUP_RESOLUTION = 256;
+const PREVIEW_WARMUP_RESOLUTION = 128;
 const PREVIEW_RESOLUTION_STEPS = [256, 512, 1024, 2048] as const;
 const PREVIEW_RESOLUTION_PROMOTION_MS = 1600;
 const PREVIEW_GPU_BACKOFF_MS = 12000;
 const PREVIEW_GPU_HARD_BACKOFF_MS = 45000;
+const SAFE_LOAD_POST_COMMIT_SETTLE_FRAMES = 2;
+const NODE_PREVIEW_FULL_WARMUP_MAX_NODES = 120;
+const NODE_PREVIEW_WARMUP_CAP_LARGE = 24;
 const ENABLE_DEBUG_FUZZ_UI = false;
 const FRAME_COLORS = ['#4d78bc', '#2f9e7f', '#a97b2c', '#b1597a', '#6b66c7'];
 const snapToGrid = (value: number, gridSize: number): number => Math.round(value / gridSize) * gridSize;
@@ -267,137 +270,71 @@ function isSubgraphCapableType(type: string): boolean {
   return type === 'atom_graph' || type === 'perlin';
 }
 
-function buildAutoLayoutDemoGraph(): GraphData {
+function buildComplexExampleGraph(): GraphData {
   return {
     schemaVersion: SCHEMA_VERSION,
     resolution: 512,
     nodes: [
-      { id: 'n_base', type: 'uniform_color', x: 120, y: 120, params: { r: 0.22, g: 0.30, b: 0.38 } },
-      { id: 'n_noise_a', type: 'perlin', x: 180, y: 180, params: { scale: 5.2, seed: 42, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
-      { id: 'n_noise_b', type: 'gaussian_noise', x: 220, y: 150, params: { scale: 10, mean: 0.5, stdDev: 0.17, seed: 91, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
-      { id: 'n_transform_a', type: 'transform_2d', x: 160, y: 230, params: { offsetX: 0.01, offsetY: 0.02, rotation: 8.0, scale: 1.05, tile: true } },
-      { id: 'n_warp_a', type: 'warp', x: 210, y: 250, params: { strength: 0.26 } },
-      { id: 'n_warp_b', type: 'warp', x: 250, y: 200, params: { strength: 0.18 } },
-      { id: 'n_uv', type: 'uv', x: 200, y: 300, params: {} },
-      { id: 'n_vec_warp', type: 'vector_warp', x: 280, y: 270, params: { intensity: 0.18, centered: true, tile: true } },
-      { id: 'n_edge', type: 'edge_detect', x: 290, y: 190, params: { radius: 1.2, strength: 1.4 } },
-      { id: 'n_blend_h', type: 'blend', x: 320, y: 220, params: { mode: 'multiply', opacity: 0.72 } },
-      { id: 'n_non_uni', type: 'non_uniform_blur', x: 300, y: 260, params: { radius: 2.0, samples: 4 } },
-      { id: 'n_hist', type: 'histogram_range', x: 330, y: 150, params: { inMin: 0.1, inMax: 0.9, outMin: 0.0, outMax: 1.0 } },
-      { id: 'n_levels_h', type: 'levels', x: 300, y: 120, params: { inMin: 0.04, inMax: 0.97, gamma: 0.9 } },
-      { id: 'n_remap_h', type: 'remap', x: 360, y: 170, params: { inLo: 0.08, inHi: 0.9, outLo: 0, outHi: 1 } },
-      { id: 'n_norm', type: 'height_to_normal', x: 390, y: 210, params: { strength: 1.6, radius: 1.0, flipY: false } },
-      { id: 'n_norm_fix', type: 'normal_normalize', x: 420, y: 240, params: { flipY: false } },
-      { id: 'out_base', type: 'output_baseColor', x: 430, y: 100, params: {} },
-      { id: 'out_rough', type: 'output_roughness', x: 450, y: 180, params: {} },
-      { id: 'out_normal', type: 'output_normal', x: 470, y: 260, params: {} },
-      { id: 'out_metal', type: 'output_metallic', x: 500, y: 140, params: {} },
-      { id: 'out_ao', type: 'output_ao', x: 520, y: 300, params: {} },
-      { id: 'out_height', type: 'output_height', x: 540, y: 220, params: {} },
+      { id: 'out_base', type: 'output_baseColor', x: 1760, y: 120, params: {} },
+      { id: 'out_rough', type: 'output_roughness', x: 1760, y: 320, params: {} },
+      { id: 'out_normal', type: 'output_normal', x: 1760, y: 520, params: {} },
+      { id: 'out_metal', type: 'output_metallic', x: 1760, y: 720, params: {} },
+      { id: 'out_ao', type: 'output_ao', x: 1760, y: 920, params: {} },
+      { id: 'out_height', type: 'output_height', x: 1760, y: 1120, params: {} },
+
+      { id: 'base_dark', type: 'uniform_color', x: 80, y: 120, params: { r: 0.14, g: 0.15, b: 0.16 } },
+      { id: 'base_light', type: 'uniform_color', x: 80, y: 240, params: { r: 0.34, g: 0.33, b: 0.30 } },
+      { id: 'macro_noise', type: 'perlin', x: 80, y: 420, params: { scale: 4.8, seed: 42, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
+      { id: 'detail_noise', type: 'gaussian_noise', x: 80, y: 620, params: { scale: 13.0, mean: 0.5, stdDev: 0.16, seed: 7, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
+      { id: 'cells', type: 'voronoi', x: 80, y: 820, params: { scale: 10.0, jitter: 0.52, seed: 77, tileOffsetX: 0.0, tileOffsetY: 0.0, nonSquare: true } },
+
+      { id: 'macro_transform', type: 'transform_2d', x: 360, y: 420, params: { offsetX: 0.01, offsetY: -0.02, rotation: 9.0, scale: 1.06, tile: true } },
+      { id: 'detail_transform', type: 'transform_2d', x: 360, y: 620, params: { offsetX: -0.01, offsetY: 0.01, rotation: -12.0, scale: 1.02, tile: true } },
+      { id: 'height_merge', type: 'blend', x: 650, y: 520, params: { mode: 'add', opacity: 0.38 } },
+      { id: 'height_mask', type: 'histogram_range', x: 920, y: 820, params: { inMin: 0.14, inMax: 0.88, outMin: 0.0, outMax: 1.0 } },
+      { id: 'height_combine', type: 'blend', x: 920, y: 520, params: { mode: 'multiply', opacity: 0.74 } },
+      { id: 'height_levels', type: 'levels', x: 1180, y: 520, params: { inMin: 0.05, inMax: 0.95, gamma: 0.9 } },
+      { id: 'height_remap', type: 'remap', x: 1440, y: 520, params: { inLo: 0.06, inHi: 0.94, outLo: 0.0, outHi: 1.0 } },
+
+      { id: 'rough_highpass', type: 'highpass_grayscale', x: 1440, y: 320, params: { radius: 1.5, intensity: 1.2 } },
+      { id: 'ao_invert', type: 'oneminus', x: 1440, y: 920, params: {} },
+      { id: 'normal_from_height', type: 'height_to_normal', x: 1440, y: 700, params: { strength: 1.75, radius: 1.0, flipY: false } },
+      { id: 'normal_fix', type: 'normal_normalize', x: 1620, y: 700, params: { flipY: false } },
+      { id: 'base_mix', type: 'lerp', x: 1180, y: 140, params: { t: 0.5 } },
+      { id: 'metal_const', type: 'constant', x: 1440, y: 1120, params: { value: 0.08 } },
     ],
     edges: [
-      { id: 'd1', fromId: 'n_noise_a', fromPort: 0, toId: 'n_transform_a', toPort: 0 },
-      { id: 'd1b', fromId: 'n_transform_a', fromPort: 0, toId: 'n_warp_a', toPort: 0 },
-      { id: 'd2', fromId: 'n_noise_b', fromPort: 0, toId: 'n_warp_b', toPort: 0 },
-      { id: 'd2b', fromId: 'n_warp_b', fromPort: 0, toId: 'n_vec_warp', toPort: 0 },
-      { id: 'd2c', fromId: 'n_uv', fromPort: 0, toId: 'n_vec_warp', toPort: 1 },
-      { id: 'd3', fromId: 'n_warp_a', fromPort: 0, toId: 'n_blend_h', toPort: 0 },
-      { id: 'd4', fromId: 'n_warp_b', fromPort: 0, toId: 'n_blend_h', toPort: 1 },
-      { id: 'd5', fromId: 'n_blend_h', fromPort: 0, toId: 'n_non_uni', toPort: 0 },
-      { id: 'd5b', fromId: 'n_noise_a', fromPort: 0, toId: 'n_non_uni', toPort: 1 },
-      { id: 'd5c', fromId: 'n_non_uni', fromPort: 0, toId: 'n_hist', toPort: 0 },
-      { id: 'd6', fromId: 'n_hist', fromPort: 0, toId: 'n_levels_h', toPort: 0 },
-      { id: 'd6b', fromId: 'n_levels_h', fromPort: 0, toId: 'n_remap_h', toPort: 0 },
-      { id: 'd7', fromId: 'n_remap_h', fromPort: 0, toId: 'n_norm', toPort: 0 },
-      { id: 'd8', fromId: 'n_remap_h', fromPort: 0, toId: 'out_height', toPort: 0 },
-      { id: 'd9', fromId: 'n_norm', fromPort: 0, toId: 'n_norm_fix', toPort: 0 },
-      { id: 'd9b', fromId: 'n_norm_fix', fromPort: 0, toId: 'out_normal', toPort: 0 },
-      { id: 'd10', fromId: 'n_edge', fromPort: 0, toId: 'out_rough', toPort: 0 },
-      { id: 'd11', fromId: 'n_vec_warp', fromPort: 0, toId: 'n_edge', toPort: 0 },
-      { id: 'd12', fromId: 'n_base', fromPort: 0, toId: 'out_base', toPort: 0 },
-      { id: 'd13', fromId: 'n_levels_h', fromPort: 0, toId: 'out_metal', toPort: 0 },
-      { id: 'd14', fromId: 'n_edge', fromPort: 0, toId: 'out_ao', toPort: 0 },
+      { id: 'e1', fromId: 'macro_noise', fromPort: 0, toId: 'macro_transform', toPort: 0 },
+      { id: 'e2', fromId: 'detail_noise', fromPort: 0, toId: 'detail_transform', toPort: 0 },
+      { id: 'e3', fromId: 'macro_transform', fromPort: 0, toId: 'height_merge', toPort: 0 },
+      { id: 'e4', fromId: 'detail_transform', fromPort: 0, toId: 'height_merge', toPort: 1 },
+      { id: 'e5', fromId: 'cells', fromPort: 0, toId: 'height_mask', toPort: 0 },
+      { id: 'e6', fromId: 'height_merge', fromPort: 0, toId: 'height_combine', toPort: 0 },
+      { id: 'e7', fromId: 'height_mask', fromPort: 0, toId: 'height_combine', toPort: 1 },
+      { id: 'e8', fromId: 'height_combine', fromPort: 0, toId: 'height_levels', toPort: 0 },
+      { id: 'e9', fromId: 'height_levels', fromPort: 0, toId: 'height_remap', toPort: 0 },
+
+      { id: 'e10', fromId: 'base_dark', fromPort: 0, toId: 'base_mix', toPort: 0 },
+      { id: 'e11', fromId: 'base_light', fromPort: 0, toId: 'base_mix', toPort: 1 },
+      { id: 'e12', fromId: 'height_mask', fromPort: 0, toId: 'base_mix', toPort: 2 },
+
+      { id: 'e13', fromId: 'height_remap', fromPort: 0, toId: 'rough_highpass', toPort: 0 },
+      { id: 'e14', fromId: 'rough_highpass', fromPort: 0, toId: 'ao_invert', toPort: 0 },
+      { id: 'e15', fromId: 'height_remap', fromPort: 0, toId: 'normal_from_height', toPort: 0 },
+      { id: 'e16', fromId: 'normal_from_height', fromPort: 0, toId: 'normal_fix', toPort: 0 },
+
+      { id: 'e17', fromId: 'base_mix', fromPort: 0, toId: 'out_base', toPort: 0 },
+      { id: 'e18', fromId: 'rough_highpass', fromPort: 0, toId: 'out_rough', toPort: 0 },
+      { id: 'e19', fromId: 'normal_fix', fromPort: 0, toId: 'out_normal', toPort: 0 },
+      { id: 'e20', fromId: 'metal_const', fromPort: 0, toId: 'out_metal', toPort: 0 },
+      { id: 'e21', fromId: 'ao_invert', fromPort: 0, toId: 'out_ao', toPort: 0 },
+      { id: 'e22', fromId: 'height_remap', fromPort: 0, toId: 'out_height', toPort: 0 },
     ],
     frames: [
-      { id: 'demo_out', x: 420, y: 70, width: 360, height: 340, label: 'Outputs', color: '#4d78bc' },
-    ],
-  };
-}
-
-function buildDirtStoneDemoGraph(): GraphData {
-  return {
-    schemaVersion: SCHEMA_VERSION,
-    resolution: 512,
-    nodes: [
-      { id: 'c_dirt_dark', type: 'constant', x: 110, y: 80, params: { value: 0.23 } },
-      { id: 'c_stone_light', type: 'constant', x: 110, y: 120, params: { value: 0.58 } },
-      { id: 'c_rough_dirt', type: 'constant', x: 110, y: 180, params: { value: 0.88 } },
-      { id: 'c_rough_stone', type: 'constant', x: 110, y: 220, params: { value: 0.62 } },
-      { id: 'c_metal', type: 'constant', x: 110, y: 280, params: { value: 0.0 } },
-
-      { id: 'n_soil_macro', type: 'noise', x: 240, y: 70, params: { scale: 2.8, octaves: 3, seed: 410, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
-      { id: 'n_soil_range', type: 'histogram_range', x: 390, y: 70, params: { inMin: 0.22, inMax: 0.84, outMin: 0.18, outMax: 0.9 } },
-
-      { id: 'n_cells', type: 'voronoi', x: 240, y: 270, params: { scale: 7, jitter: 0.58, seed: 77, tileOffsetX: 0, tileOffsetY: 0, nonSquare: true } },
-      { id: 'n_stone_mask', type: 'levels', x: 390, y: 270, params: { inMin: 0.36, inMax: 0.82, gamma: 0.82 } },
-      { id: 'n_stone_soften', type: 'histogram_range', x: 540, y: 270, params: { inMin: 0.08, inMax: 0.94, outMin: 0.0, outMax: 0.86 } },
-
-      { id: 'n_height_merge', type: 'blend', x: 690, y: 190, params: { mode: 'add', opacity: 0.3 } },
-      { id: 'n_height_finish', type: 'curve', x: 840, y: 190, params: { lift: 0.0, gamma: 0.96, gain: 1.0 } },
-
-      { id: 'n_base_tone', type: 'lerp', x: 690, y: 70, params: { t: 0.5 } },
-      { id: 'n_base_variation', type: 'blend', x: 840, y: 70, params: { mode: 'multiply', opacity: 0.14 } },
-      { id: 'n_rough_tone', type: 'lerp', x: 690, y: 130, params: { t: 0.5 } },
-      { id: 'n_ao_invert', type: 'oneminus', x: 690, y: 300, params: {} },
-      { id: 'n_ao_levels', type: 'levels', x: 840, y: 300, params: { inMin: 0.16, inMax: 0.88, gamma: 1.04 } },
-
-      { id: 'n_normal', type: 'height_to_normal', x: 1010, y: 190, params: { strength: 1.35, radius: 1.0, flipY: false } },
-      { id: 'n_normal_fix', type: 'normal_normalize', x: 1150, y: 190, params: { flipY: false } },
-
-      { id: 'out_base', type: 'output_baseColor', x: 1150, y: 70, params: {} },
-      { id: 'out_rough', type: 'output_roughness', x: 1150, y: 130, params: {} },
-      { id: 'out_metal', type: 'output_metallic', x: 1150, y: 190, params: {} },
-      { id: 'out_height', type: 'output_height', x: 1320, y: 190, params: {} },
-      { id: 'out_normal', type: 'output_normal', x: 1320, y: 260, params: {} },
-      { id: 'out_ao', type: 'output_ao', x: 1150, y: 300, params: {} },
-    ],
-    edges: [
-      { id: 'e1', fromId: 'n_soil_macro', fromPort: 0, toId: 'n_soil_range', toPort: 0 },
-
-      { id: 'e2', fromId: 'n_cells', fromPort: 0, toId: 'n_stone_mask', toPort: 0 },
-      { id: 'e3', fromId: 'n_stone_mask', fromPort: 0, toId: 'n_stone_soften', toPort: 0 },
-
-      { id: 'e4', fromId: 'n_soil_range', fromPort: 0, toId: 'n_height_merge', toPort: 0 },
-      { id: 'e5', fromId: 'n_stone_soften', fromPort: 0, toId: 'n_height_merge', toPort: 1 },
-      { id: 'e6', fromId: 'n_height_merge', fromPort: 0, toId: 'n_height_finish', toPort: 0 },
-      { id: 'e7', fromId: 'n_height_finish', fromPort: 0, toId: 'n_normal', toPort: 0 },
-      { id: 'e8', fromId: 'n_normal', fromPort: 0, toId: 'n_normal_fix', toPort: 0 },
-
-      { id: 'e9', fromId: 'c_dirt_dark', fromPort: 0, toId: 'n_base_tone', toPort: 0 },
-      { id: 'e10', fromId: 'c_stone_light', fromPort: 0, toId: 'n_base_tone', toPort: 1 },
-      { id: 'e11', fromId: 'n_stone_mask', fromPort: 0, toId: 'n_base_tone', toPort: 2 },
-      { id: 'e12', fromId: 'n_base_tone', fromPort: 0, toId: 'n_base_variation', toPort: 0 },
-      { id: 'e13', fromId: 'n_soil_range', fromPort: 0, toId: 'n_base_variation', toPort: 1 },
-
-      { id: 'e14', fromId: 'c_rough_dirt', fromPort: 0, toId: 'n_rough_tone', toPort: 0 },
-      { id: 'e15', fromId: 'c_rough_stone', fromPort: 0, toId: 'n_rough_tone', toPort: 1 },
-      { id: 'e16', fromId: 'n_stone_mask', fromPort: 0, toId: 'n_rough_tone', toPort: 2 },
-
-      { id: 'e17', fromId: 'n_stone_soften', fromPort: 0, toId: 'n_ao_invert', toPort: 0 },
-      { id: 'e18', fromId: 'n_ao_invert', fromPort: 0, toId: 'n_ao_levels', toPort: 0 },
-
-      { id: 'e19', fromId: 'n_base_variation', fromPort: 0, toId: 'out_base', toPort: 0 },
-      { id: 'e20', fromId: 'n_rough_tone', fromPort: 0, toId: 'out_rough', toPort: 0 },
-      { id: 'e21', fromId: 'c_metal', fromPort: 0, toId: 'out_metal', toPort: 0 },
-      { id: 'e22', fromId: 'n_height_finish', fromPort: 0, toId: 'out_height', toPort: 0 },
-      { id: 'e23', fromId: 'n_normal_fix', fromPort: 0, toId: 'out_normal', toPort: 0 },
-      { id: 'e24', fromId: 'n_ao_levels', fromPort: 0, toId: 'out_ao', toPort: 0 },
-    ],
-    frames: [
-      { id: 'soil_frame', x: 200, y: 30, width: 280, height: 120, label: 'Soil Base', color: '#5a4f3f' },
-      { id: 'stone_frame', x: 200, y: 230, width: 420, height: 120, label: 'Stone Masking', color: '#53565a' },
-      { id: 'material_frame', x: 650, y: 30, width: 260, height: 330, label: 'Material and Height', color: '#4d564b' },
-      { id: 'final_frame', x: 1110, y: 30, width: 270, height: 320, label: 'Final Channels', color: '#584a4a' },
+      { id: 'fr_inputs', x: 40, y: 70, width: 280, height: 980, label: 'Inputs', color: '#4d78bc' },
+      { id: 'fr_height', x: 320, y: 350, width: 1260, height: 640, label: 'Height Stack', color: '#2f9e7f' },
+      { id: 'fr_material', x: 1080, y: 70, width: 520, height: 220, label: 'Material Mix', color: '#a97b2c' },
+      { id: 'fr_outputs', x: 1710, y: 70, width: 300, height: 1180, label: 'Outputs', color: '#b1597a' },
     ],
   };
 }
@@ -469,6 +406,7 @@ export default function App() {
     return snapshot.resolution === initialLivePatternSizeRef.current ? snapshot : { ...snapshot, resolution: initialLivePatternSizeRef.current };
   });
   const graphRef = useRef<GraphData>(graph);
+  const visibleNodeIdsRef = useRef<string[]>([]);
   
   const tile = true;
   const [rawMode, setRawMode] = useState(false);
@@ -537,6 +475,7 @@ export default function App() {
   const previewProgramKeyRef = useRef('');
   const previewRuntimeKeyRef = useRef('');
   const thumbnailRoundRobinRef = useRef(0);
+  const previewCompileRoundRobinRef = useRef(0);
   const perfRingRef = useRef<RendererPerfSample[]>([]);
   const stableBudgetSinceRef = useRef(0);
   const lastCompileMsRef = useRef(0);
@@ -547,6 +486,16 @@ export default function App() {
   const previewCompileWorkerReadyRef = useRef(false);
   const previewCompileWorkerDisabledRef = useRef(false);
   const previewCompiledShadersRef = useRef<Map<string, CompiledShader>>(new Map());
+  const safeLoadRunRef = useRef(0);
+  const [projectLoadInProgress, setProjectLoadInProgress] = useState(false);
+  const [preview3dRenderEnabled, setPreview3dRenderEnabled] = useState<boolean>(() => {
+    try {
+      const raw = window.localStorage.getItem(PREVIEW_3D_RENDER_ENABLED_KEY);
+      return raw === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const { root, floating, setActiveTab, resetLayout, addView, savePreset, loadPreset, getPresetNames } = useWorkspace();
   const { hasGraphTab, has2DPreviewTab, has3DPreviewTab } = useMemo(() => {
@@ -571,13 +520,13 @@ export default function App() {
       has3DPreviewTab: nextHas3DPreviewTab,
     };
   }, [floating, root]);
-  const shouldRenderNodePreviews = hasGraphTab;
-  const shouldRenderOutputSurfaces = has3DPreviewTab;
+  const shouldRenderNodePreviews = hasGraphTab && !projectLoadInProgress;
+  const shouldRenderOutputSurfaces = has3DPreviewTab && preview3dRenderEnabled && !projectLoadInProgress;
   const nodePreviewGpuUnavailable = !!thumbnailStatusMessage;
   const preview3dReady = useMemo(() => {
-    if (!has3DPreviewTab) return false;
+    if (!has3DPreviewTab || !preview3dRenderEnabled) return false;
     return nodePreviewWarmupDone || !shouldRenderNodePreviews || nodePreviewGpuUnavailable;
-  }, [has3DPreviewTab, nodePreviewWarmupDone, shouldRenderNodePreviews, nodePreviewGpuUnavailable]);
+  }, [has3DPreviewTab, preview3dRenderEnabled, nodePreviewWarmupDone, shouldRenderNodePreviews, nodePreviewGpuUnavailable]);
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<GraphContextMenuRequest | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -776,6 +725,7 @@ export default function App() {
   }, []);
 
   useEffect(() => () => {
+    safeLoadRunRef.current += 1;
     if (interactTimerRef.current) window.clearTimeout(interactTimerRef.current);
     if (compileDebounceTimerRef.current) window.clearTimeout(compileDebounceTimerRef.current);
     if (thumbnailBlockTimerRef.current) window.clearTimeout(thumbnailBlockTimerRef.current);
@@ -872,6 +822,7 @@ export default function App() {
     try {
       window.localStorage.setItem(PREVIEW_HIDPI_KEY, previewHiDpi ? '1' : '0');
       window.localStorage.setItem(PREVIEW_RENDER_ENABLED_KEY, previewRenderEnabled ? '1' : '0');
+      window.localStorage.setItem(PREVIEW_3D_RENDER_ENABLED_KEY, preview3dRenderEnabled ? '1' : '0');
       window.localStorage.setItem(PREVIEW_3D_RENDERER_KEY, preview3dRenderer);
       window.localStorage.setItem(PREVIEW_PAINT_ENABLED_KEY, previewPaintEnabled ? '1' : '0');
       window.localStorage.setItem(PREVIEW_PAINT_RADIUS_KEY, String(previewBrushRadius));
@@ -879,7 +830,7 @@ export default function App() {
     } catch {
       /* ignore localStorage errors */
     }
-  }, [previewHiDpi, previewRenderEnabled, preview3dRenderer, previewPaintEnabled, previewBrushRadius, previewBrushColor]);
+  }, [previewHiDpi, previewRenderEnabled, preview3dRenderEnabled, preview3dRenderer, previewPaintEnabled, previewBrushRadius, previewBrushColor]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -902,6 +853,14 @@ export default function App() {
     outputPreviewSurfacesRef.current = outputPreviewSurfaces;
   }, [outputPreviewSurfaces]);
 
+  useEffect(() => {
+    if (preview3dRenderEnabled) return;
+    setOutputSurfacePending(false);
+    outputPreviewKeysRef.current = {};
+    outputPreviewSurfacesRef.current = {};
+    setOutputPreviewSurfaces({});
+  }, [preview3dRenderEnabled]);
+
   const outputSigRef = useRef<string>('');
   const positionOnlyRef = useRef(false);
   useEffect(() => {
@@ -921,6 +880,20 @@ export default function App() {
     historyRef.current.past.push(cloneGraph(prev));
     if (historyRef.current.past.length > MAX_HISTORY) historyRef.current.past.shift();
     historyRef.current.future = [];
+  }, []);
+
+  const cancelSafeProjectLoad = useCallback(() => {
+    safeLoadRunRef.current += 1;
+    setProjectLoadInProgress(false);
+  }, []);
+
+  const commitGraphSnapshot = useCallback((next: GraphData, liveResolution: number) => {
+    const staged = next.resolution === liveResolution ? next : { ...next, resolution: liveResolution };
+    engine.current = new GraphEngine(staged);
+    tex.current.setResolution(liveResolution);
+    graphRef.current = staged;
+    setActivePatternSize(liveResolution);
+    setGraph(staged);
   }, []);
 
   const applyLivePatternSize = useCallback((next: number) => {
@@ -949,22 +922,105 @@ export default function App() {
   const handleViewportGpuFailure = useCallback((source: 'three' | 'babylon', reason: string, hard = false) => {
     const message = `${source === 'three' ? 'Three' : 'Babylon'} GPU backoff: ${reason}`;
     appendAppLog({ level: 'warn', source: 'preview3d', message, details: hard ? 'hard' : 'soft' });
+    if (hard) {
+      setPreview3dRenderEnabled(false);
+      appendAppLog({
+        level: 'warn',
+        source: 'preview3d',
+        message: '3D rendering disabled after hard GPU fault',
+      });
+    }
     enterGpuSafetyBackoff(message, hard);
   }, [enterGpuSafetyBackoff]);
 
   const applyEngineGraph = useCallback((next: GraphData, requestedResolution?: number) => {
+    cancelSafeProjectLoad();
     const requested = Math.max(128, requestedResolution ?? next.resolution ?? 512);
     const live = clampSafePreviewResolution(requested);
-    const staged = next.resolution === live ? next : { ...next, resolution: live };
-    engine.current = new GraphEngine(staged);
-    tex.current.setResolution(live);
-    graphRef.current = staged;
-    setActivePatternSize(live);
     setPatternSizePromoting(requested > live);
-    setGraph(staged);
+    commitGraphSnapshot(next, live);
+  }, [cancelSafeProjectLoad, commitGraphSnapshot]);
+
+  const completeProjectLoadAfterPaint = useCallback((
+    runId: number,
+    requested: number,
+    live: number,
+    totalNodes: number,
+    startedAt: number,
+  ) => {
+    const finalize = () => {
+      if (safeLoadRunRef.current !== runId) return;
+      setProjectLoadInProgress(false);
+      setPatternSizePromoting(requested > live);
+      appendAppLog({
+        level: 'info',
+        source: 'project-load',
+        message: `Safe load complete (${totalNodes} nodes in ${(performance.now() - startedAt).toFixed(1)}ms)`,
+      });
+    };
+
+    const settle = (remainingFrames: number) => {
+      if (remainingFrames <= 0) {
+        finalize();
+        return;
+      }
+      if (typeof window.requestAnimationFrame !== 'function') {
+        window.setTimeout(() => settle(remainingFrames - 1), 16);
+        return;
+      }
+      window.requestAnimationFrame(() => settle(remainingFrames - 1));
+    };
+
+    settle(SAFE_LOAD_POST_COMMIT_SETTLE_FRAMES);
   }, []);
 
+  const applyEngineGraphSafely = useCallback((next: GraphData, requestedResolution?: number) => {
+    const requested = Math.max(128, requestedResolution ?? next.resolution ?? 512);
+    const live = clampSafePreviewResolution(requested);
+    const base = next.resolution === live ? next : { ...next, resolution: live };
+    const totalNodes = base.nodes.length;
+    const startedAt = performance.now();
+    const runId = safeLoadRunRef.current + 1;
+    safeLoadRunRef.current = runId;
+
+    setProjectLoadInProgress(true);
+    setPatternSizePromoting(true);
+    setOutputSurfacePending(false);
+    setPreviewPending(false);
+    setNodePreviews({});
+    setNodeTimings({});
+    setOutputPreviewSurfaces({});
+    outputPreviewKeysRef.current = {};
+    outputPreviewSurfacesRef.current = {};
+    previewCompiledShadersRef.current.clear();
+    previewProgramKeyRef.current = '';
+    previewRuntimeKeyRef.current = '';
+    thumbnailRoundRobinRef.current = 0;
+    previewCompileRoundRobinRef.current = 0;
+    deferThumbnails(2200);
+    appendAppLog({
+      level: 'info',
+      source: 'project-load',
+      message: `Safe load started (${totalNodes} nodes at ${live}px, preview freeze active)`,
+    });
+
+    // Commit once at warmup resolution, then keep heavy preview work frozen
+    // until at least one paint has landed to avoid load-time long-task storms.
+    window.setTimeout(() => {
+      if (safeLoadRunRef.current !== runId) return;
+      const commitStartedAt = performance.now();
+      commitGraphSnapshot(base, live);
+      appendAppLog({
+        level: 'info',
+        source: 'project-load',
+        message: `Safe load graph committed (${totalNodes} nodes in ${(performance.now() - commitStartedAt).toFixed(1)}ms)`,
+      });
+      completeProjectLoadAfterPaint(runId, requested, live, totalNodes, startedAt);
+    }, 0);
+  }, [commitGraphSnapshot, completeProjectLoadAfterPaint, deferThumbnails, setPreviewPending]);
+
   const applyMutation = useCallback((mutate: (eng: GraphEngine) => boolean | void, withHistory = true) => {
+    cancelSafeProjectLoad();
     const prev = engine.current.serialize();
     const result = mutate(engine.current);
     if (result === false) return false;
@@ -972,7 +1028,7 @@ export default function App() {
     if (withHistory) pushHistory(prev);
     setGraph(next);
     return true;
-  }, [pushHistory]);
+  }, [cancelSafeProjectLoad, pushHistory]);
 
   const onSetPatternSize = useCallback((next: number) => {
     setPatternSize(next);
@@ -998,7 +1054,7 @@ export default function App() {
       const parsed = JSON.parse(raw) as { graph?: GraphData; patternSize?: number; savedAt?: number };
       if (!parsed || !parsed.graph || !Array.isArray(parsed.graph.nodes) || !Array.isArray(parsed.graph.edges)) return;
       const nextSize = parsed.patternSize ?? parsed.graph.resolution ?? 512;
-      applyEngineGraph(parsed.graph, nextSize);
+      applyEngineGraphSafely(parsed.graph, nextSize);
       setPatternSize(nextSize);
       historyRef.current = { past: [], future: [] };
       setSelectedNodeId(null);
@@ -1016,13 +1072,14 @@ export default function App() {
         details: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [applyEngineGraph]);
+  }, [applyEngineGraphSafely]);
 
   const onSelectionSetChange = useCallback((ids: string[]) => {
     setSelectedNodeIds(ids);
   }, []);
 
   const onVisibleNodeIdsChange = useCallback((ids: string[]) => {
+    visibleNodeIdsRef.current = ids;
     setVisibleNodeIds((prev) => (
       prev.length === ids.length && prev.every((id, idx) => id === ids[idx])
         ? prev
@@ -1044,29 +1101,17 @@ export default function App() {
     ));
   }, [selectedNodeId]);
 
-  const loadAutoLayoutDemo = useCallback(() => {
-    const demo = buildAutoLayoutDemoGraph();
-    const requested = demo.resolution || 512;
-    applyEngineGraph(demo, requested);
+  const loadComplexExample = useCallback(() => {
+    const example = buildComplexExampleGraph();
+    const requested = example.resolution || 512;
+    applyEngineGraphSafely(example, requested);
     setPatternSize(requested);
     setSelectedNodeId(null);
     setSelectedNodeIds([]);
     historyRef.current = { past: [], future: [] };
-    showAutoLayoutNotice('Demo DAG loaded. Run Auto Layout.', 'ok');
-    appendAppLog({ level: 'info', source: 'layout', message: 'Auto-layout demo graph loaded' });
-  }, [applyEngineGraph, showAutoLayoutNotice]);
-
-  const loadDirtStoneDemo = useCallback(() => {
-    const demo = buildDirtStoneDemoGraph();
-    const requested = demo.resolution || 1024;
-    applyEngineGraph(demo, requested);
-    setPatternSize(requested);
-    setSelectedNodeId(null);
-    setSelectedNodeIds([]);
-    historyRef.current = { past: [], future: [] };
-    showAutoLayoutNotice('Dirt and stone material demo loaded for render testing.', 'ok');
-    appendAppLog({ level: 'info', source: 'graph', message: 'Dirt and stone material demo loaded' });
-  }, [applyEngineGraph, showAutoLayoutNotice]);
+    showAutoLayoutNotice('Complex example loaded.', 'ok');
+    appendAppLog({ level: 'info', source: 'graph', message: 'Complex example loaded' });
+  }, [applyEngineGraphSafely, showAutoLayoutNotice]);
 
   const getAutoLayout = useCallback(async () => {
     if (!autoLayoutModuleRef.current) {
@@ -1242,7 +1287,7 @@ export default function App() {
         const gd = tex.current.load(raw);
         const requested = tex.current.getResolution();
         setPatternSize(requested);
-        applyEngineGraph(gd, requested);
+        applyEngineGraphSafely(gd, requested);
         historyRef.current = { past: [], future: [] };
         setSelectedNodeId(null);
       } catch (err: any) {
@@ -1257,7 +1302,7 @@ export default function App() {
     };
     reader.readAsText(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [applyEngineGraph]);
+  }, [applyEngineGraphSafely]);
 
   const copySelection = useCallback(() => {
     if (!selectedNodeId) return;
@@ -1943,7 +1988,12 @@ export default function App() {
   const graphPerfHash = outputAffectingSig;
 
   useEffect(() => {
-    setNodePreviewWarmupDone(!shouldRenderNodePreviews);
+    if (!shouldRenderNodePreviews) {
+      setNodePreviewWarmupDone(true);
+      return;
+    }
+    const totalNodes = graphRef.current.nodes.length;
+    setNodePreviewWarmupDone(totalNodes > NODE_PREVIEW_FULL_WARMUP_MAX_NODES);
   }, [outputAffectingSig, shouldRenderNodePreviews]);
 
   useEffect(() => {
@@ -1967,7 +2017,7 @@ export default function App() {
       setPatternSizePromoting(false);
       return;
     }
-    if ((shouldRenderNodePreviews && !nodePreviewWarmupDone) || outputSurfacePending || gpuCooling) {
+    if (projectLoadInProgress || (shouldRenderNodePreviews && !nodePreviewWarmupDone) || outputSurfacePending || gpuCooling) {
       setPatternSizePromoting(true);
       return;
     }
@@ -1990,6 +2040,7 @@ export default function App() {
     nodePreviewWarmupDone,
     outputSurfacePending,
     gpuCooling,
+    projectLoadInProgress,
     interacting,
     chaosMode,
     previewWorkPending,
@@ -1999,12 +2050,22 @@ export default function App() {
   useEffect(() => {
     previewCompiledShadersRef.current.clear();
     if (!shouldRenderNodePreviews) return;
+    if (projectLoadInProgress) return;
     if (!previewCompileWorkerReady || previewCompileWorkerDisabledRef.current) return;
     const worker = previewCompileWorkerRef.current;
     if (!worker) return;
 
     const snapshot = graphRef.current;
+    const totalNodes = snapshot.nodes.length;
     const signature = outputAffectingSig;
+    const compileJobCap = (() => {
+      if (totalNodes >= 420) return 20;
+      if (totalNodes >= 240) return 32;
+      if (totalNodes >= 120) return 56;
+      if (totalNodes >= 72) return 88;
+      return totalNodes;
+    })();
+    const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
     const edgesByFromNode = new Map<string, number[]>();
     for (const edge of snapshot.edges) {
       const next = edgesByFromNode.get(edge.fromId);
@@ -2020,6 +2081,40 @@ export default function App() {
       if (node.type === 'split' && def.outputs.length > 4) return 4;
       return 0;
     };
+    const priorityIds: string[] = [];
+    const prioritySet = new Set<string>();
+    const addPriorityId = (id: string | null | undefined) => {
+      if (!id || prioritySet.has(id) || !nodeById.has(id)) return;
+      prioritySet.add(id);
+      priorityIds.push(id);
+    };
+    addPriorityId(selectedNodeId);
+    addPriorityId(pinnedPreviewNodeId);
+    visibleNodeIdsRef.current.forEach(addPriorityId);
+    snapshot.nodes.forEach((node) => {
+      if (isOutputNodeType(node.type)) addPriorityId(node.id);
+    });
+    const plan = tex.current.getPlan();
+    const dirtyIds = plan ? getDirtyNodes(plan) : [];
+    dirtyIds.slice(0, Math.max(12, compileJobCap)).forEach(addPriorityId);
+    const restIds = snapshot.nodes
+      .map((node) => node.id)
+      .filter((id) => !prioritySet.has(id));
+    const compileIds = totalNodes <= compileJobCap
+      ? snapshot.nodes.map((node) => node.id)
+      : (() => {
+          const base = priorityIds.slice(0, compileJobCap);
+          const remaining = Math.max(0, compileJobCap - base.length);
+          if (remaining <= 0 || restIds.length === 0) return base;
+          const start = previewCompileRoundRobinRef.current % restIds.length;
+          const rotated = restIds.slice(start).concat(restIds.slice(0, start));
+          const picked = rotated.slice(0, remaining);
+          previewCompileRoundRobinRef.current = (start + remaining) % restIds.length;
+          return base.concat(picked);
+        })();
+    const nodesToCompile = compileIds
+      .map((id) => nodeById.get(id))
+      .filter((node): node is NodeData => !!node);
 
     worker.postMessage({
       type: 'set_graph',
@@ -2027,7 +2122,7 @@ export default function App() {
       graph: snapshot,
     } satisfies PreviewCompileWorkerRequest);
 
-    for (const node of snapshot.nodes) {
+    for (const node of nodesToCompile) {
       const previewPort = getNodePreviewPort(node);
       const meta = buildPreviewRequestMeta(node, previewPort, outputThumbChannel);
       worker.postMessage({
@@ -2040,7 +2135,7 @@ export default function App() {
         outputChannel: meta.outputChannel,
       } satisfies PreviewCompileWorkerRequest);
     }
-  }, [outputAffectingSig, shouldRenderNodePreviews, previewCompileWorkerReady]);
+  }, [outputAffectingSig, shouldRenderNodePreviews, projectLoadInProgress, previewCompileWorkerReady, selectedNodeId, pinnedPreviewNodeId]);
 
   const onViewportPerfSample = useCallback((sample: ViewportPerfSample) => {
     const merged: RendererPerfSample = {
@@ -2443,7 +2538,10 @@ export default function App() {
   }, [previewTarget.nodeId, previewTarget.port, outputPreviewChannel]);
 
   useEffect(() => {
-    if (!has2DPreviewTab) return;
+    if (!has2DPreviewTab || projectLoadInProgress) {
+      setPreviewPending(false);
+      return;
+    }
     let cancelled = false;
     if (compileDebounceTimerRef.current) {
       window.clearTimeout(compileDebounceTimerRef.current);
@@ -2557,6 +2655,7 @@ export default function App() {
     outputAffectingSig,
     interacting,
     has2DPreviewTab,
+    projectLoadInProgress,
     buildCompileBacktest,
     reportCompileIssue,
     setPreviewPending,
@@ -2577,7 +2676,10 @@ export default function App() {
       if (totalNodes >= 64) return 26;
       return 40;
     })();
-    const nodePreviewTargetCount = nodePreviewWarmupDone ? previewNodeBudget : totalNodes;
+    const warmupTargetCount = totalNodes > NODE_PREVIEW_FULL_WARMUP_MAX_NODES
+      ? Math.min(totalNodes, NODE_PREVIEW_WARMUP_CAP_LARGE)
+      : totalNodes;
+    const nodePreviewTargetCount = nodePreviewWarmupDone ? previewNodeBudget : warmupTargetCount;
     const dirtyPriorityCap = totalNodes > 240 ? 8 : totalNodes > 120 ? 12 : 28;
     const allowRoundRobin = nodePreviewWarmupDone && totalNodes <= 120;
     const nodeById = new Map(snapshot.nodes.map((n) => [n.id, n]));
@@ -3047,6 +3149,7 @@ export default function App() {
     pinnedPreviewNodeId,
     previewFrameBudgetMs,
     preview3dReady,
+    preview3dRenderEnabled,
     preview3dRenderer,
     setPreview3dRenderer,
     performanceMode,
@@ -3063,6 +3166,7 @@ export default function App() {
     onPinPreview: setPinnedPreviewNodeId,
     onTogglePreviewHiDpi: () => setPreviewHiDpi(v => !v),
     onTogglePreviewRenderEnabled: () => setPreviewRenderEnabled(v => !v),
+    onTogglePreview3dRenderEnabled: () => setPreview3dRenderEnabled(v => !v),
     onTogglePreviewPaintEnabled: () => setPreviewPaintEnabled(v => !v),
     onSetPreviewPaintBrushRadius: (radius: number) => setPreviewBrushRadius(Math.max(1, Math.min(256, radius))),
     onSetPreviewPaintBrushColor: (color: string) => {
@@ -3089,7 +3193,7 @@ export default function App() {
     snapEnabled, snapGridSize,
     previewShader, codeShader, compileError, patternSize, previewResolution,
     previewTarget, previewResScale, previewHiDpi, previewRenderEnabled, previewPaintEnabled, previewPaintBrush, previewBrushRadius, previewBrushColor, interacting, pinnedPreviewNodeId,
-    previewFrameBudgetMs, preview3dReady, preview3dRenderer, performanceMode, viewportQuality, rendererPerf, rendererPerfP95, rendererPerfP50,
+    previewFrameBudgetMs, preview3dReady, preview3dRenderEnabled, preview3dRenderer, performanceMode, viewportQuality, rendererPerf, rendererPerfP95, rendererPerfP50,
     thumbnailDeferred, graphPerfHash, onViewportPerfSample, handleViewportGpuFailure, gpuCooling, gpuSafetyMessage,
     tile, rawMode, uniformRows, stats, onPreviewError,
     monitorRuns, monitorRunning, runMonitorSuite, clearMonitorRuns,
@@ -3123,8 +3227,7 @@ export default function App() {
                 <div className="nt-drop-item" onClick={() => { addView('library', 'Library'); setWindowMenuOpen(false); }}>New Library</div>
                 <div className="nt-drop-item" onClick={() => { addView('explorer', 'Explorer'); setWindowMenuOpen(false); }}>New Explorer</div>
                 <div style={menuDropSep} />
-                <div className="nt-drop-item" onClick={() => { loadDirtStoneDemo(); setWindowMenuOpen(false); }}>Load Demo Material (Dirt + Stones)</div>
-                <div className="nt-drop-item" onClick={() => { loadAutoLayoutDemo(); setWindowMenuOpen(false); }}>Load Demo DAG (Layout)</div>
+                <div className="nt-drop-item" onClick={() => { loadComplexExample(); setWindowMenuOpen(false); }}>Load Example (Complex)</div>
                 <div style={menuDropSep} />
                 <div className="nt-drop-item" onClick={() => {
                   const name = prompt('Preset name:');
@@ -3175,6 +3278,13 @@ export default function App() {
           <select value={patternSize} onChange={e => onSetPatternSize(parseInt(e.target.value, 10))} className="nt-select" title="Texture size">
             {[256, 512, 1024, 2048].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
+          <button
+            onClick={() => setPreview3dRenderEnabled((v) => !v)}
+            className="nt-btn"
+            title="Enable or disable all 3D rendering"
+          >
+            {preview3dRenderEnabled ? '3D ON' : '3D OFF'}
+          </button>
           {patternSizePromoting && activePatternSize < patternSize && (
             <span style={{ ...labelStyle, color: '#d3a15f' }} title={`Rendering live at ${activePatternSize} first, then promoting to ${patternSize}`}>
               {`${activePatternSize} -> ${patternSize}`}

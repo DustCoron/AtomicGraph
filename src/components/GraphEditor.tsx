@@ -14,6 +14,11 @@ const FRAME_MIN_W = 180;
 const FRAME_MIN_H = 120;
 const FRAME_HEADER_H = 24;
 const RENDER_VISIBILITY_PADDING_PX = 220;
+const LARGE_GRAPH_NODE_THRESHOLD = 180;
+const LARGE_GRAPH_EDGE_THRESHOLD = 260;
+const EDGE_PICKING_LIMIT = 260;
+const EDGE_INTERACTION_LIMIT = 480;
+const EDGE_GRADIENT_LIMIT = 260;
 
 const catColor = (t: string) => {
   const cat = NODE_REGISTRY[t]?.category;
@@ -50,12 +55,17 @@ const withAlpha = (color: string | undefined, alphaHex: string, fallback: string
   return base;
 };
 
+const nodeHeightCache = new Map<string, number>();
 const nodeHeight = (type: string) => {
+  const cached = nodeHeightCache.get(type);
+  if (cached != null) return cached;
   const d = NODE_REGISTRY[type];
   if (!d) return HDR + ROW + 10;
-  const inputParamRows = d.inputs.length + Object.keys(d.params).length;
+  const inputParamRows = d.inputs.length + Object.keys(d.params ?? {}).length;
   const outputRows = d.outputs?.length ?? 1;
-  return HDR + PREVIEW_H + Math.max(inputParamRows, outputRows, 1) * ROW + 10;
+  const height = HDR + PREVIEW_H + Math.max(inputParamRows, outputRows, 1) * ROW + 10;
+  nodeHeightCache.set(type, height);
+  return height;
 };
 
 interface Bounds {
@@ -337,6 +347,38 @@ export function GraphEditor({
     edges.filter((edge) => renderedNodeSet.has(edge.fromId) || renderedNodeSet.has(edge.toId))
   ), [edges, renderedNodeSet]);
 
+  const edgeInputPortsByNode = useMemo(() => {
+    const map = new Map<string, Set<number>>();
+    for (const edge of edges) {
+      let entry = map.get(edge.toId);
+      if (!entry) {
+        entry = new Set<number>();
+        map.set(edge.toId, entry);
+      }
+      entry.add(edge.toPort);
+    }
+    return map;
+  }, [edges]);
+
+  const edgeOutputPortsByNode = useMemo(() => {
+    const map = new Map<string, Set<number>>();
+    for (const edge of edges) {
+      let entry = map.get(edge.fromId);
+      if (!entry) {
+        entry = new Set<number>();
+        map.set(edge.fromId, entry);
+      }
+      entry.add(edge.fromPort);
+    }
+    return map;
+  }, [edges]);
+
+  const isLargeGraph = nodes.length >= LARGE_GRAPH_NODE_THRESHOLD || edges.length >= LARGE_GRAPH_EDGE_THRESHOLD;
+  const renderEdgeGradients = !isLargeGraph && renderedEdges.length <= EDGE_GRADIENT_LIMIT && zoom >= 0.45;
+  const edgeInteractionEnabled = renderedEdges.length <= EDGE_INTERACTION_LIMIT && zoom >= 0.35;
+  const edgePickingEnabled = renderedEdges.length <= EDGE_PICKING_LIMIT && zoom >= 0.5;
+  const edgeHitSampleSteps = renderedEdges.length > 140 ? 10 : 20;
+
   useEffect(() => {
     const host = ref.current;
     if (!host) return;
@@ -367,13 +409,14 @@ export function GraphEditor({
       }
       return;
     }
-    const nextVisibleIds = renderedNodes.map((node) => node.id);
+    const visibleNodeBudget = isLargeGraph ? 320 : renderedNodes.length;
+    const nextVisibleIds = renderedNodes.slice(0, visibleNodeBudget).map((node) => node.id);
     const prevIds = visibleIdsRef.current;
     const unchanged = prevIds.length === nextVisibleIds.length && prevIds.every((id, idx) => id === nextVisibleIds[idx]);
     if (unchanged) return;
     visibleIdsRef.current = nextVisibleIds;
     onVisibleNodeIdsChange(nextVisibleIds);
-  }, [onVisibleNodeIdsChange, renderBounds, renderedNodes]);
+  }, [onVisibleNodeIdsChange, renderBounds, renderedNodes, isLargeGraph]);
 
   useEffect(() => () => {
     if (onVisibleNodeIdsChange) onVisibleNodeIdsChange([]);
@@ -715,29 +758,31 @@ export function GraphEditor({
       }
     }
 
-    // Edges (sampled Bezier)
-    const edgeThreshold = 9 / zoom;
-    for (const ed of renderedEdges) {
-      const fn = nodeById.get(ed.fromId);
-      const tn = nodeById.get(ed.toId);
-      const fromDef = fn ? NODE_REGISTRY[fn.type] : null;
-      if (!fn || !tn || !fromDef) continue;
-      const s = outPos(fn, ed.fromPort, fromDef.outputs?.length ?? 1);
-      const t = inPos(tn, ed.toPort);
-      const d = Math.max(Math.abs(t.x - s.x) * 0.5, 55);
-      let minDist = Number.POSITIVE_INFINITY;
-      let px = s.x, py = s.y;
-      for (let step = 1; step <= 20; step++) {
-        const tt = step / 20;
-        const u = 1 - tt;
-        const x = u * u * u * s.x + 3 * u * u * tt * (s.x + d) + 3 * u * tt * tt * (t.x - d) + tt * tt * tt * t.x;
-        const y = u * u * u * s.y + 3 * u * u * tt * s.y + 3 * u * tt * tt * t.y + tt * tt * tt * t.y;
-        minDist = Math.min(minDist, distanceToSegment(gx, gy, px, py, x, y));
-        px = x;
-        py = y;
-      }
-      if (minDist <= edgeThreshold) {
-        return { kind: 'edge', edgeId: ed.id };
+    if (edgePickingEnabled) {
+      // Edges (sampled Bezier)
+      const edgeThreshold = 9 / zoom;
+      for (const ed of renderedEdges) {
+        const fn = nodeById.get(ed.fromId);
+        const tn = nodeById.get(ed.toId);
+        const fromDef = fn ? NODE_REGISTRY[fn.type] : null;
+        if (!fn || !tn || !fromDef) continue;
+        const s = outPos(fn, ed.fromPort, fromDef.outputs?.length ?? 1);
+        const t = inPos(tn, ed.toPort);
+        const d = Math.max(Math.abs(t.x - s.x) * 0.5, 55);
+        let minDist = Number.POSITIVE_INFINITY;
+        let px = s.x, py = s.y;
+        for (let step = 1; step <= edgeHitSampleSteps; step++) {
+          const tt = step / edgeHitSampleSteps;
+          const u = 1 - tt;
+          const x = u * u * u * s.x + 3 * u * u * tt * (s.x + d) + 3 * u * tt * tt * (t.x - d) + tt * tt * tt * t.x;
+          const y = u * u * u * s.y + 3 * u * u * tt * s.y + 3 * u * tt * tt * t.y + tt * tt * tt * t.y;
+          minDist = Math.min(minDist, distanceToSegment(gx, gy, px, py, x, y));
+          px = x;
+          py = y;
+        }
+        if (minDist <= edgeThreshold) {
+          return { kind: 'edge', edgeId: ed.id };
+        }
       }
     }
 
@@ -749,7 +794,7 @@ export function GraphEditor({
     }
 
     return { kind: 'canvas' };
-  }, [renderedNodes, renderedEdges, nodeById, effectiveFrames, zoom]);
+  }, [renderedNodes, renderedEdges, nodeById, effectiveFrames, zoom, edgeHitSampleSteps, edgePickingEnabled]);
 
   const onContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -933,7 +978,7 @@ export function GraphEditor({
       }}>
         <rect width="100%" height="100%" fill="transparent" />
         <defs>
-        {renderedEdges.map(ed => {
+        {renderEdgeGradients && renderedEdges.map(ed => {
           const fn = nodeById.get(ed.fromId), tn = nodeById.get(ed.toId);
           if (!fn || !tn) return null;
           const fromDef = NODE_REGISTRY[fn.type];
@@ -961,13 +1006,15 @@ export function GraphEditor({
           const inType = (toDef?.inputs[ed.toPort]?.type as DataType) ?? 'float';
           const fromColor = dataTypeColor(outType);
           const toColor = dataTypeColor(inType);
-          const needsGradient = outType !== inType && NUMERIC_TYPES.includes(outType) && NUMERIC_TYPES.includes(inType);
+          const needsGradient = renderEdgeGradients && outType !== inType && NUMERIC_TYPES.includes(outType) && NUMERIC_TYPES.includes(inType);
           const fp = pScreen(fn, true, ed.fromPort), tp = pScreen(tn, false, ed.toPort), path = bz(fp.x, fp.y, tp.x, tp.y);
           const stroke = needsGradient ? `url(#edge-grad-${ed.id})` : fromColor;
           return (
             <g key={ed.id}>
               <path d={path} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" pointerEvents="none" />
-              <path d={path} fill="none" stroke="transparent" strokeWidth="16" style={{ cursor: "pointer" }} onClick={e => { e.stopPropagation(); onDelEdge(ed.id); }} />
+              {edgeInteractionEnabled && (
+                <path d={path} fill="none" stroke="transparent" strokeWidth="16" style={{ cursor: "pointer" }} onClick={e => { e.stopPropagation(); onDelEdge(ed.id); }} />
+              )}
             </g>
           );
         })}
@@ -1064,12 +1111,13 @@ export function GraphEditor({
         })}
         {renderedNodes.map((n) => {
           const isSelected = selectedSet.has(n.id);
-          const lodMode: 'full' | 'compact' = 'full';
           return (
             <NodeCard
               key={n.id}
               node={n}
               edges={edges}
+              connectedInputPorts={edgeInputPortsByNode.get(n.id)}
+              connectedOutputPorts={edgeOutputPortsByNode.get(n.id)}
               allNodes={nodes}
               isSel={isSelected}
               isConn={!!conn}
@@ -1077,9 +1125,9 @@ export function GraphEditor({
               connFromPort={conn?.fromPort}
               connFromType={conn?.fromType}
               snapTarget={conn && snapTarget?.nodeId === n.id ? snapTarget : null}
-              previewUrl={lodMode === 'full' ? nodePreviews?.[n.id] : undefined}
+              previewUrl={nodePreviews?.[n.id]}
               compileMs={nodeTimings?.[n.id]}
-              lodMode={lodMode}
+              lodMode="full"
               onDrag={startDrag}
               onOut={onOut}
               onIn={onIn}

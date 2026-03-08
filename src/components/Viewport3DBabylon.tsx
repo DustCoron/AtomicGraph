@@ -125,6 +125,9 @@ const PERF_RING_SIZE = 300;
 const IDLE_RENDER_INTERVAL_MS = 800;
 const FORCE_RENDER_INTERVAL_MS = 8000;
 const SLEEP_AFTER_IDLE_MS = 8000;
+const MAX_DYNAMIC_TEXTURE_DIM_QUALITY = 1024;
+const MAX_DYNAMIC_TEXTURE_DIM_PERF = 512;
+const MAX_HEIGHT_READBACK_DIM = 1024;
 
 const RANGE_STYLE: React.CSSProperties = {
   width: '100%',
@@ -259,6 +262,19 @@ function drawCanvasToTexture(tex: DynamicTexture, canvas: HTMLCanvasElement) {
   tex.update(false);
 }
 
+function fitTextureDimensions(width: number, height: number, maxDimension: number): { width: number; height: number } {
+  const safeW = Math.max(1, Math.round(width));
+  const safeH = Math.max(1, Math.round(height));
+  const maxDim = Math.max(1, Math.round(maxDimension));
+  const largest = Math.max(safeW, safeH);
+  if (largest <= maxDim) return { width: safeW, height: safeH };
+  const scale = maxDim / largest;
+  return {
+    width: Math.max(1, Math.round(safeW * scale)),
+    height: Math.max(1, Math.round(safeH * scale)),
+  };
+}
+
 const DEFAULT_ROUGHNESS_BYTE = 190; // ~= #bebebe (matches Three fallback roughness)
 const DEFAULT_METALLIC_BYTE = 0; // #000000
 
@@ -292,8 +308,10 @@ function sampleCanvasLumaToByteBuffer(
 function updatePackedMetalRoughTexture(state: BabylonState): DynamicTexture {
   const roughCanvas = state.dynamic.roughness?.canvas ?? null;
   const metallicCanvas = state.dynamic.metallic?.canvas ?? null;
-  const width = Math.max(1, roughCanvas?.width ?? metallicCanvas?.width ?? 4);
-  const height = Math.max(1, roughCanvas?.height ?? metallicCanvas?.height ?? 4);
+  const roughSize = state.dynamic.roughness?.texture.getSize();
+  const metallicSize = state.dynamic.metallic?.texture.getSize();
+  const width = Math.max(1, roughSize?.width ?? metallicSize?.width ?? 4);
+  const height = Math.max(1, roughSize?.height ?? metallicSize?.height ?? 4);
 
   let packed = state.packedMetalRough;
   const packedSize = packed?.getSize();
@@ -677,8 +695,9 @@ function applyViewMode(state: BabylonState, mode: ViewMode) {
 }
 
 function readHeightBuffer(state: BabylonState, canvas: HTMLCanvasElement): { buffer: Uint8Array; width: number; height: number } | null {
-  const width = Math.max(1, canvas.width || 1);
-  const height = Math.max(1, canvas.height || 1);
+  const fitted = fitTextureDimensions(canvas.width || 1, canvas.height || 1, MAX_HEIGHT_READBACK_DIM);
+  const width = fitted.width;
+  const height = fitted.height;
   state.heightReadbackCanvas.width = width;
   state.heightReadbackCanvas.height = height;
   const ctx = state.heightReadbackCtx;
@@ -985,15 +1004,15 @@ export function Viewport3DBabylon({
     if (!inspectMode || !incoming.height.canvas) return displacementAmount;
     return Math.max(displacementAmount * inspectStrength, 0.16);
   }, [inspectMode, incoming.height.canvas, displacementAmount, inspectStrength]);
-  const forceHighPlaneTessellation = useMemo(
-    () => meshPreset === 'plane' && !!incoming.height.canvas && effectiveDisplacementAmount > 0.0001,
-    [meshPreset, incoming.height.canvas, effectiveDisplacementAmount],
-  );
   const roughnessConnected = !!incoming.roughness.canvas;
-  const effectiveTessellationQuality: TessellationQuality = forceHighPlaneTessellation ? 'high' : tessellationQuality;
+  const effectiveTessellationQuality: TessellationQuality = tessellationQuality;
   const planeSegments = useMemo(
     () => planeSegmentsForQuality(effectiveTessellationQuality),
     [effectiveTessellationQuality],
+  );
+  const dynamicTextureMaxDim = useMemo(
+    () => (renderProfile === 'performance' ? MAX_DYNAMIC_TEXTURE_DIM_PERF : MAX_DYNAMIC_TEXTURE_DIM_QUALITY),
+    [renderProfile],
   );
 
   useEffect(() => {
@@ -1007,20 +1026,39 @@ export function Viewport3DBabylon({
     const cv = canvasRef.current;
     if (!host || !cv) return;
     let disposed = false;
+    let animationFrame = 0;
 
     try {
       const handleContextLost = (event: Event) => {
         event.preventDefault();
         const message = 'Babylon WebGL context lost';
+        disposed = true;
+        if (animationFrame !== 0) {
+          window.cancelAnimationFrame(animationFrame);
+          animationFrame = 0;
+        }
+        wakeRendererRef.current = null;
+        sceneDirtyRef.current = false;
         setError(message);
-        onGpuFailure?.('babylon', message);
+        onGpuFailure?.('babylon', message, true);
       };
       const handleContextRestored = () => {
         setError(null);
       };
       cv.addEventListener('webglcontextlost', handleContextLost, { passive: false });
       cv.addEventListener('webglcontextrestored', handleContextRestored);
-      const engine = new Engine(cv, false, { preserveDrawingBuffer: true, stencil: true, premultipliedAlpha: true }, true);
+      const engine = new Engine(
+        cv,
+        false,
+        {
+          preserveDrawingBuffer: false,
+          stencil: false,
+          premultipliedAlpha: false,
+          powerPreference: 'low-power',
+          failIfMajorPerformanceCaveat: true,
+        },
+        false,
+      );
       const scene = new Scene(engine);
       scene.clearColor = new Color4(VIEWPORT_BACKGROUND.r, VIEWPORT_BACKGROUND.g, VIEWPORT_BACKGROUND.b, 1);
 
@@ -1146,7 +1184,6 @@ export function Viewport3DBabylon({
       let lastStatsUpdateAt = 0;
       let lastPerfEmitAt = 0;
       let lastInteractionAt = performance.now();
-      let animationFrame = 0;
       let frameId = 0;
       let overBudgetFrames = 0;
       const frameTimes = new Float32Array(PERF_RING_SIZE);
@@ -1467,17 +1504,25 @@ export function Viewport3DBabylon({
 
       if (existing && existing.canvas === canvas && existing.version === version) return;
 
+      const fitted = fitTextureDimensions(
+        canvas.width || 1,
+        canvas.height || 1,
+        dynamicTextureMaxDim,
+      );
+      const textureWidth = fitted.width;
+      const textureHeight = fitted.height;
+
       const needsNewTexture =
         !existing
         || existing.canvas !== canvas
-        || existing.texture.getSize().width !== Math.max(1, canvas.width || 1)
-        || existing.texture.getSize().height !== Math.max(1, canvas.height || 1);
+        || existing.texture.getSize().width !== textureWidth
+        || existing.texture.getSize().height !== textureHeight;
 
       if (needsNewTexture) {
         existing?.texture.dispose();
         const texture = new DynamicTexture(
           `paint_${channel}`,
-          { width: Math.max(1, canvas.width || 1), height: Math.max(1, canvas.height || 1) },
+          { width: textureWidth, height: textureHeight },
           state.scene,
           false,
         );
@@ -1502,7 +1547,7 @@ export function Viewport3DBabylon({
     applyViewMode(state, viewMode);
     setError(null);
     requestRender();
-  }, [incoming, viewMode]);
+  }, [dynamicTextureMaxDim, incoming, viewMode]);
 
   useEffect(() => {
     const state = stateRef.current;
@@ -1647,7 +1692,7 @@ export function Viewport3DBabylon({
             <div style={{ color: '#f3f4f6', fontWeight: 700, fontSize: 11 }}>Material and Surface</div>
             <label style={{ fontSize: 10, color: '#b9bec6', display: 'flex', flexDirection: 'column', gap: 3 }}>Displacement ({effectiveDisplacementAmount.toFixed(3)})<input type="range" min={0} max={0.4} step={0.005} value={displacementAmount} onChange={(e) => setDisplacementAmount(Number(e.target.value))} /></label>
             <label style={{ fontSize: 10, color: '#b9bec6', display: 'flex', alignItems: 'center', gap: 6 }}>Tessellation<select value={tessellationQuality} onChange={(e) => setTessellationQuality(e.target.value as TessellationQuality)} className="nt-select"><option value="low">Low</option><option value="med">Medium</option><option value="high">High</option></select></label>
-            {meshPreset === 'plane' && <div style={{ fontSize: 9, color: '#8b9098' }}>Plane segments: {planeSegments}{forceHighPlaneTessellation ? ' (forced High by height displacement)' : ''}</div>}
+            {meshPreset === 'plane' && <div style={{ fontSize: 9, color: '#8b9098' }}>Plane segments: {planeSegments}</div>}
             <label style={{ fontSize: 10, color: '#b9bec6', display: 'flex', alignItems: 'center', gap: 6 }}>Normal Map<select value={normalConvention} onChange={(e) => setNormalConvention(e.target.value as NormalConvention)} className="nt-select"><option value="opengl">OpenGL</option><option value="directx">DirectX</option></select></label>
             <label style={{ fontSize: 10, color: '#b9bec6', display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={wireframeEnabled} onChange={(e) => setWireframeEnabled(e.target.checked)} />Wireframe</label>
             <label style={{ fontSize: 10, color: '#b9bec6', display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={inspectMode} onChange={(e) => setInspectMode(e.target.checked)} />Inspect relief</label>
