@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Crosshair, Maximize2, Wand2 } from 'lucide-react';
 import { CompiledShader, CompiledUniformDescriptor } from '../core/compiler';
 import { GraphData, NodeData } from '../core/types';
 import { GraphEngine } from '../core/graph';
@@ -10,6 +11,7 @@ import { PerformanceMode, RendererPerfSample, ViewportPerfSample, ViewportQualit
 import { MonitorMode, MonitorSuiteRun, getRunOverallSeverity, severityWeight } from '../core/monitor';
 import { GraphContextMenuRequest, GraphEditor } from '../components/GraphEditor';
 import { createDefaultPreview3DSharedSceneState } from '../components/preview3dShared';
+import { InspectorView } from '../components/Inspector';
 const LazyViewport = React.lazy(async () => {
   const mod = await import('../components/Viewport');
   return { default: mod.Viewport };
@@ -18,10 +20,10 @@ const LazyViewport3D = React.lazy(async () => {
   const mod = await import('../components/Viewport3D');
   return { default: mod.Viewport3D };
 });
-const LazyViewport3DBabylon = React.lazy(async () => {
-  const mod = await import('../components/Viewport3DBabylon');
-  return { default: mod.Viewport3DBabylon };
-});
+// The Babylon viewport (and `@babylonjs/core` dep, ~5 MB minified) were
+// removed in favour of a single Three.js path. Tradeoff notes are in
+// `docs/DEFERRED-FEATURES.md`. If we ever come back, the right move is
+// the WebGPU-native renderer outlined there, not a re-import of Babylon.
 
 export interface UniformRow {
   name: string;
@@ -82,6 +84,7 @@ export interface AppContextValue {
   onCanvasInteractionEnd?: () => void;
   onVisibleNodeIdsChange?: (ids: string[]) => void;
   onGraphZoomChange?: (zoom: number) => void;
+  projectLoadInProgress?: boolean;
   nodePreviews?: Record<string, string>;
   outputPreviewSurfaces?: Partial<Record<OutputChannel, OutputPreviewSurface>>;
   nodeTimings?: Record<string, number>;
@@ -117,8 +120,14 @@ export interface AppContextValue {
   previewFrameBudgetMs: number;
   preview3dReady: boolean;
   preview3dRenderEnabled: boolean;
-  preview3dRenderer: 'three' | 'babylon';
-  setPreview3dRenderer: (renderer: 'three' | 'babylon') => void;
+  /**
+   * Kept as a single-valued union for now so we don't have to rip the
+   * field out of every spread/dep array — Babylon was removed in favour
+   * of a single Three path. Re-broaden the union if/when a second
+   * backend lands again.
+   */
+  preview3dRenderer: 'three';
+  setPreview3dRenderer: (renderer: 'three') => void;
   onTogglePreview3dRenderEnabled: () => void;
   performanceMode: PerformanceMode;
   viewportQuality: ViewportQualityState;
@@ -128,7 +137,7 @@ export interface AppContextValue {
   thumbnailDeferred: boolean;
   graphPerfHash: string;
   onViewportPerfSample: (sample: ViewportPerfSample) => void;
-  onViewportGpuFailure?: (source: 'three' | 'babylon', reason: string, hard?: boolean) => void;
+  onViewportGpuFailure?: (source: 'three', reason: string, hard?: boolean) => void;
   gpuCooling?: boolean;
   gpuSafetyMessage?: string | null;
 
@@ -153,6 +162,17 @@ export interface AppContextValue {
 
   atomViewBindings: Record<string, string>;
   onOpenAtomNode: (nodeId: string) => void;
+
+  // Graph view–scoped controls. Live on the Graph panel's own floating
+  // overlay so they only show when a Graph view is actually present
+  // (instead of squatting in the global toolbar where they did nothing
+  // for Code / 3D Preview / Logs / Monitor panels).
+  frameAllGraphView: () => void;
+  resetGraphView: () => void;
+  runAutoLayout: (scope?: 'all' | 'selection') => void;
+  autoLayoutRunning: boolean;
+  autoLayoutNotice: { tone: 'ok' | 'warn'; text: string } | null;
+  selectedNodeIdsCount: number;
 }
 
 export const AppContext = createContext<AppContextValue | null>(null);
@@ -371,6 +391,8 @@ export function GraphView() {
         onCanvasInteractionEnd={app.onCanvasInteractionEnd}
         onVisibleNodeIdsChange={app.onVisibleNodeIdsChange}
         onZoomChange={app.onGraphZoomChange}
+        projectLoadInProgress={app.projectLoadInProgress}
+        previewResolution={app.graph.resolution}
         onNodeOpen={onNodeOpen}
         onCanvasClick={app.onCanvasClick}
         onRequestContextMenu={app.onRequestContextMenu}
@@ -382,7 +404,89 @@ export function GraphView() {
         snapEnabled={app.snapEnabled}
         snapSize={app.snapGridSize}
       />
+      <GraphViewControls app={app} />
       <FpsOverlay stats={app.stats} backend="WebGPU" />
+    </div>
+  );
+}
+
+/**
+ * Floating control strip rendered in the top-left of the Graph panel.
+ * Hosts the graph-specific view actions (frame all, reset camera, auto
+ * layout, layout-selected) that used to sit in the global toolbar — they
+ * only make sense when a Graph panel is the active view, so they belong
+ * inside that panel rather than competing for global header real estate.
+ */
+function GraphViewControls({ app }: { app: AppContextValue }) {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        // Offset to the right of FpsOverlay (top: 8, left: 8, width ≈ 200)
+        // so the two floating widgets don't stack on top of each other.
+        top: 8,
+        left: 220,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '3px 6px',
+        background: 'rgba(20, 24, 34, 0.78)',
+        border: '1px solid #2a2e3a',
+        borderRadius: 5,
+        backdropFilter: 'blur(6px)',
+        zIndex: 15,
+        pointerEvents: 'auto',
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button
+        onClick={app.frameAllGraphView}
+        className="nt-btn nt-btn-icon"
+        title="Frame all graph content"
+        aria-label="Frame all"
+      >
+        <Maximize2 size={13} />
+      </button>
+      <button
+        onClick={app.resetGraphView}
+        className="nt-btn nt-btn-icon"
+        title="Reset graph camera (F)"
+        aria-label="Reset view"
+      >
+        <Crosshair size={13} />
+      </button>
+      <button
+        onClick={() => app.runAutoLayout('all')}
+        className="nt-btn nt-btn-icon"
+        disabled={app.autoLayoutRunning}
+        title="Run deterministic ELK layered layout (left to right)"
+        aria-label="Auto layout"
+      >
+        {app.autoLayoutRunning ? <span style={{ fontSize: 11 }}>…</span> : <Wand2 size={13} />}
+      </button>
+      <button
+        onClick={() => app.runAutoLayout('selection')}
+        className="nt-btn"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 6px' }}
+        disabled={app.autoLayoutRunning || app.selectedNodeIdsCount < 2}
+        title={app.selectedNodeIdsCount < 2 ? 'Select at least 2 nodes' : 'Layout only selected nodes'}
+      >
+        <Wand2 size={12} />
+        <span style={{ fontSize: 10, letterSpacing: 0.3 }}>SEL</span>
+      </button>
+      {app.autoLayoutNotice && (
+        <span
+          style={{
+            marginLeft: 6,
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: 0.3,
+            color: app.autoLayoutNotice.tone === 'warn' ? '#ffb3b3' : '#9ff3ca',
+          }}
+        >
+          {app.autoLayoutNotice.text}
+        </span>
+      )}
     </div>
   );
 }
@@ -924,36 +1028,20 @@ export function Preview3DView() {
   return (
     <div style={{ width: '100%', height: '100%', background: '#1b2230', display: 'flex', flexDirection: 'column' }}>
       <div style={{ height: 30, display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px', borderBottom: '1px solid #343c4c', flexShrink: 0 }}>
-        <span style={{ fontSize: 10, color: '#8fa0c2', fontWeight: 700, letterSpacing: 0.3 }}>Renderer</span>
         <button
           className="nt-btn-sm"
           style={{ height: 20, padding: '0 7px', fontSize: 9 }}
           onClick={app.onTogglePreview3dRenderEnabled}
+          title="Toggle 3D rendering on/off"
         >
           {app.preview3dRenderEnabled ? '3D On' : '3D Off'}
-        </button>
-        <button
-          className="nt-btn-sm"
-          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
-          disabled={!app.preview3dRenderEnabled}
-          onClick={() => app.setPreview3dRenderer('three')}
-        >
-          {app.preview3dRenderer === 'three' ? 'Three Active' : 'Three'}
-        </button>
-        <button
-          className="nt-btn-sm"
-          style={{ height: 20, padding: '0 7px', fontSize: 9 }}
-          disabled={!app.preview3dRenderEnabled}
-          onClick={() => app.setPreview3dRenderer('babylon')}
-        >
-          {app.preview3dRenderer === 'babylon' ? 'Babylon Active' : 'Babylon'}
         </button>
         <span style={{ marginLeft: 'auto', fontSize: 10, color: '#6f7f9e' }}>
           {!app.preview3dRenderEnabled
             ? '3D rendering disabled'
             : app.gpuCooling
             ? (app.gpuSafetyMessage || 'GPU safety cooldown active')
-            : (app.preview3dRenderer === 'babylon' ? 'Babylon.js raster preview' : 'Three.js raster preview')}
+            : 'Three.js raster preview'}
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
@@ -965,9 +1053,7 @@ export function Preview3DView() {
             </div>
           }
         >
-          {app.preview3dRenderer === 'babylon'
-            ? <LazyViewport3DBabylon {...sharedProps} />
-            : <LazyViewport3D {...sharedProps} />}
+          <LazyViewport3D {...sharedProps} />
         </React.Suspense>
       ) : (
         <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', color: '#8fa0c2', fontSize: 12 }}>
@@ -1611,6 +1697,7 @@ const VIEW_MAP: Record<string, React.ComponentType> = {
   code: CodeView,
   logs: LogsView,
   explorer: ExplorerView,
+  inspector: InspectorView,
 };
 
 export function renderViewByType(type: string, viewId: string): React.ReactNode {

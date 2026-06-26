@@ -374,6 +374,22 @@ export function Viewport({
                   gNow.fatalMessage = '';
                   if (errRef.current) errRef.current.style.display = 'none';
                   propsRef.current.onShaderError?.('');
+                } else if (result.transient) {
+                  // Device dropped (HMR / stale renderer). Not a shader bug — don't
+                  // pin a compile error in System Health, don't exponential-backoff:
+                  // just clear hashes so the next tick rebuilds on the fresh device.
+                  gNow.lastShaderHash = '';
+                  gNow.lastStaticRenderKey = '';
+                  gNow.compileFailHash = '';
+                  gNow.compileFailCount = 0;
+                  gNow.compileFailUntil = 0;
+                  appendAppLog({
+                    level: 'info',
+                    source: 'viewport',
+                    message: 'WebGPU device dropped mid-compile; retrying on fresh device',
+                    details: result.error,
+                    graph_hash: propsRef.current.graphHash,
+                  });
                 } else {
                   gNow.lastShaderHash = '';
                   gNow.lastStaticRenderKey = '';

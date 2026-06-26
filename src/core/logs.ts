@@ -19,6 +19,32 @@ const LOG_EVENT = 'nt:app-logs-updated';
 const MAX_LOG_ENTRIES = 800;
 const DEDUPE_WINDOW_MS = 1500;
 
+// Dev-only mirror to the ag-devbridge Vite plugin (see scripts/vite-plugin-ag-devbridge.mjs).
+// Production builds tree-shake this away because `import.meta.env.DEV` is statically false.
+const IS_DEV = (() => {
+  try { return !!(import.meta as any).env?.DEV; }
+  catch { return false; }
+})();
+
+function devbridgeMirror(entry: AppLogEntry) {
+  if (!IS_DEV) return;
+  if (typeof fetch !== 'function' || typeof window === 'undefined') return;
+  try {
+    const body = JSON.stringify(entry);
+    // keepalive lets the POST survive a page unload (e.g. HMR replacement),
+    // and any network failure is intentionally swallowed — we never want
+    // diagnostics to crash the app they're diagnosing.
+    fetch('/__ag/log', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      keepalive: true,
+    }).catch(() => { /* swallow */ });
+  } catch {
+    /* swallow */
+  }
+}
+
 function safeRead(): AppLogEntry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -107,6 +133,7 @@ export function appendAppLog(input: {
   }
   safeWrite(logs);
   notifyUpdate();
+  devbridgeMirror(next);
   return next;
 }
 

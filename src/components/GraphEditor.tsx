@@ -8,8 +8,13 @@ import { NodeCard } from './NodeCard';
 
 const ZOOM_MIN = 0.15, ZOOM_MAX = 2.5, ZOOM_STEP = 0.1;
 const DEFAULT_GRID_SIZE = 26;
-const PREVIEW_SIZE = 128;
-const NW = 210, HDR = 36, PREVIEW_H = PREVIEW_SIZE + 12, ROW = 28, PR = 6;
+// Card geometry — MUST stay in sync with NodeCard.tsx. Sockets are positioned
+// using HDR + PREVIEW_H offsets here for hit-testing/edge routing; if these
+// constants drift from NodeCard, edges hit empty pixels where the card no
+// longer is.
+const PREVIEW_SIZE = 100;
+const NW = PREVIEW_SIZE + 20, HDR = 28, PREVIEW_H = PREVIEW_SIZE + 4, ROW = 20, PR = 6;
+const NODE_BOTTOM_PAD = 4;
 const FRAME_MIN_W = 180;
 const FRAME_MIN_H = 120;
 const FRAME_HEADER_H = 24;
@@ -41,8 +46,11 @@ const NUMERIC_TYPES: DataType[] = ['float', 'vec2', 'vec3', 'vec4'];
 
 const outPos = (n: NodeData, portIndex: number, outputCount: number) => {
   if (outputCount <= 1) return { x: n.x + NW, y: n.y + HDR / 2 };
+  // Params no longer live on the card — outputs stack right after the
+  // input sockets. Stay in sync with NodeCard's layout (HDR + preview +
+  // inputs, then outputs).
   const def = NODE_REGISTRY[n.type];
-  const rowsBeforeOutputs = (def?.inputs.length ?? 0) + Object.keys(n.params ?? {}).length;
+  const rowsBeforeOutputs = def?.inputs.length ?? 0;
   const y = n.y + HDR + PREVIEW_H + (rowsBeforeOutputs + portIndex + 0.5) * ROW;
   return { x: n.x + NW, y };
 };
@@ -60,10 +68,13 @@ const nodeHeight = (type: string) => {
   const cached = nodeHeightCache.get(type);
   if (cached != null) return cached;
   const d = NODE_REGISTRY[type];
-  if (!d) return HDR + ROW + 10;
-  const inputParamRows = d.inputs.length + Object.keys(d.params ?? {}).length;
+  if (!d) return HDR + ROW + NODE_BOTTOM_PAD;
+  // Cards are display-only since params moved to the Inspector panel; height
+  // is just header + thumbnail + sockets. Must match NodeCard's `nodeH()`
+  // or hit-testing and edge routing desync.
+  const inputRows = d.inputs.length;
   const outputRows = d.outputs?.length ?? 1;
-  const height = HDR + PREVIEW_H + Math.max(inputParamRows, outputRows, 1) * ROW + 10;
+  const height = HDR + PREVIEW_H + Math.max(inputRows, outputRows, 1) * ROW + NODE_BOTTOM_PAD;
   nodeHeightCache.set(type, height);
   return height;
 };
@@ -203,11 +214,22 @@ interface GraphEditorProps {
   onZoomChange?: (zoom: number) => void;
   nodePreviews?: Record<string, string>;
   nodeTimings?: Record<string, number>;
+  /** Live engine resolution propagated to each NodeCard for the corner badge. */
+  previewResolution?: number;
   viewCommandNonce?: number;
   viewCommandType?: 'reset' | 'frame_all' | null;
   onToggleSnap?: () => void;
   snapEnabled?: boolean;
   snapSize?: number;
+  /**
+   * When true, render every node in its compact LOD — no preview canvas,
+   * no param controls, no port dots. Used during Safe Load (Load Example,
+   * project restore) where instantiating 24 full NodeCard subtrees stalls
+   * the first paint by seconds. The lightweight cards still occupy the
+   * same layout slot so the graph visually pops in immediately; the full
+   * UI returns automatically when `projectLoadInProgress` flips off.
+   */
+  projectLoadInProgress?: boolean;
 }
 
 export function GraphEditor({
@@ -234,11 +256,13 @@ export function GraphEditor({
   onZoomChange,
   nodePreviews,
   nodeTimings,
+  previewResolution,
   viewCommandNonce,
   viewCommandType,
   onToggleSnap,
   snapEnabled = true,
   snapSize = DEFAULT_GRID_SIZE,
+  projectLoadInProgress = false,
 }: GraphEditorProps) {
   const [pan, setPan] = useState({ x: 60, y: 60 });
   const [zoom, setZoom] = useState(1.0);
@@ -1127,7 +1151,8 @@ export function GraphEditor({
               snapTarget={conn && snapTarget?.nodeId === n.id ? snapTarget : null}
               previewUrl={nodePreviews?.[n.id]}
               compileMs={nodeTimings?.[n.id]}
-              lodMode="full"
+              previewResolution={previewResolution}
+              lodMode={projectLoadInProgress ? 'compact' : 'full'}
               onDrag={startDrag}
               onOut={onOut}
               onIn={onIn}

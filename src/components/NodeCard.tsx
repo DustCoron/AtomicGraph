@@ -4,79 +4,68 @@ import { DataType, NodeData, EdgeData } from '../core/types';
 import { NODE_REGISTRY, CATEGORIES } from '../core/registry';
 import { isOutputNodeType } from '../core/output';
 
-const ROW = 28;
-const HDR = 36;
-const PREVIEW_SIZE = 128;
-const PREVIEW_H = PREVIEW_SIZE + 12;
-const NW = 210;
-const NW_REMOTE = 240;
+// Tightened after the Inspector migration removed params from cards: card
+// is now title + thumbnail + sockets only, so we shrank the preview, the
+// card width, and the socket row height to remove dead space that used to
+// be filled by parameter widgets. Numbers chosen to keep long node labels
+// like "Highpass Grayscale" mostly visible in the header (truncation falls
+// back to the title tooltip when needed) while pulling the layout tighter.
+//
+// IMPORTANT: GraphEditor.tsx has its own copies of NW/HDR/PREVIEW_H/ROW for
+// hit-testing and socket positioning math — keep both in sync or sockets
+// will desync from the rendered card.
+const ROW = 20;
+const HDR = 28;
+const PREVIEW_SIZE = 100;
+// Just 4px of vertical padding around the preview — anything more reads as
+// dead space now that params no longer live below it.
+const PREVIEW_H = PREVIEW_SIZE + 4;
+// Card width hugs the preview: PREVIEW_SIZE + 10px symmetrical padding. The
+// category text badge ("FILTER" / "GEN" / etc) was removed from the header
+// — its info is already conveyed by the colored header bar, and the text
+// was eating ~30px of horizontal room that pushed the title to truncate.
+const NW = PREVIEW_SIZE + 20;
+const NW_REMOTE = NW + 30;
 const PR = 6;
+const NODE_BOTTOM_PAD = 4;
 
 const catColor = (t: string) => {
   const cat = NODE_REGISTRY[t]?.category;
   return (CATEGORIES as any)[cat]?.color ?? "#888";
 };
 
+/**
+ * Card height now only accounts for **sockets** (input + output rows), the
+ * preview thumbnail and the header. Parameter widgets live in the Inspector
+ * panel — the card itself is title + thumbnail + sockets. Removing params
+ * from the card cuts ~30× the DOM weight per graph and keeps reconcile fast.
+ *
+ * NOTE: keep in sync with `nodeHeight()` in GraphEditor.tsx — both must
+ * compute the same height or socket positions desync from the card.
+ */
 const nodeH = (t: string) => {
   const d = NODE_REGISTRY[t];
-  if (!d) return HDR + ROW + 10;
-  const inputParamRows = d.inputs.length + Object.keys(d.params).length;
+  if (!d) return HDR + ROW + NODE_BOTTOM_PAD;
+  const inputRows = d.inputs.length;
   const outputRows = d.outputs?.length ?? 1;
-  return HDR + PREVIEW_H + Math.max(inputParamRows, outputRows, 1) * ROW + 10;
+  return HDR + PREVIEW_H + Math.max(inputRows, outputRows, 1) * ROW + NODE_BOTTOM_PAD;
 };
 
-interface ParamProps {
-  pk: string;
-  val: any;
-  meta: any;
-  accent?: string;
-  nodeId: string;
-  onUpdate: (id: string, k: string, v: any) => void;
-}
-
-function Param({ pk, val, meta, nodeId, onUpdate }: ParamProps) {
-  if (!meta) return null;
-  if (meta.type === 'float') {
-    const dec = meta.step < 0.05 ? 3 : meta.step < 1 ? 2 : 1;
-    return (
-      <div style={{ padding: "3px 10px", height: ROW, display: "flex", flexDirection: "column", justifyContent: "center" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-          <span style={{ fontSize: 10, color: "#e2e8f0", letterSpacing: 1.2, textTransform: "uppercase", userSelect: "none" }}>{pk}</span>
-          <span style={{ fontSize: 11, color: "#f8fafc", fontFamily: "monospace" }}>{Number(val).toFixed(dec)}</span>
-        </div>
-        <input type="range" min={meta.min} max={meta.max} step={meta.step} value={val}
-          onMouseDown={e => e.stopPropagation()}
-          onChange={e => onUpdate(nodeId, pk, parseFloat(e.target.value))}
-          style={{ width: "100%", accentColor: "#64748b", cursor: "pointer", height: 2 }} />
-      </div>
-    );
-  }
-  if (meta.type === 'select') {
-    return (
-      <div style={{ display: "flex", alignItems: "center", height: ROW, padding: "0 10px", gap: 6 }}>
-        <span style={{ fontSize: 10, color: "#e2e8f0", letterSpacing: 1.2, textTransform: "uppercase", userSelect: "none", flex: 1 }}>{pk}</span>
-        <select value={val} onMouseDown={e => e.stopPropagation()} onChange={e => onUpdate(nodeId, pk, e.target.value)}
-          style={{ background: "#0b0b17", border: "1px solid #334155", color: "#f1f5f9", borderRadius: 3, padding: "2px 5px", fontSize: 10, fontFamily: "inherit", cursor: "pointer", outline: "none", maxWidth: 115 }}>
-          {meta.options.map((o: string) => <option key={o} value={o}>{o}</option>)}
-        </select>
-      </div>
-    );
-  }
-  if (meta.type === 'bool') {
-    return (
-      <div style={{ display: "flex", alignItems: "center", height: ROW, padding: "0 10px", gap: 6 }}>
-        <span style={{ fontSize: 10, color: "#e2e8f0", letterSpacing: 1.2, textTransform: "uppercase", userSelect: "none", flex: 1 }}>{pk}</span>
-        <input type="checkbox" checked={!!val} onMouseDown={e => e.stopPropagation()} onChange={e => onUpdate(nodeId, pk, e.target.checked)}
-          style={{ accentColor: "#94a3b8", cursor: "pointer" }} />
-      </div>
-    );
-  }
-  return null;
-}
+// Param/ColorSwatch/LevelsCurve were inline widgets on the card. They moved
+// to `src/components/Inspector.tsx` along with everything else that lets the
+// user *edit* a node. The card is now display-only (title + thumbnail +
+// sockets), which is what made the Inspector refactor worth doing.
 
 interface NodeCardProps {
   node: NodeData;
   edges: EdgeData[];
+  /**
+   * Live engine resolution at the time this preview was rendered. Shown as
+   * a small badge in the preview corner so it's obvious when a thumbnail
+   * is at 128 (Safe Load warm-up resolution) vs the requested target. The
+   * value comes from `graph.resolution` upstream.
+   */
+  previewResolution?: number;
   connectedInputPorts?: ReadonlySet<number>;
   connectedOutputPorts?: ReadonlySet<number>;
   allNodes?: NodeData[];
@@ -129,13 +118,17 @@ function buildNodeTooltip(def: (typeof NODE_REGISTRY)[string], node: NodeData): 
   ].join('\n');
 }
 
-function RemoteCard({ node, allNodes, isSel, onDrag, onUpdate, onDelete, onSelect, compact }: {
+/**
+ * Remote node card: now display-only like every other card. The binding
+ * editor (target / param / value) lives in the Inspector panel. The card
+ * shows the resolved binding as a compact label so the user can see at a
+ * glance which node + parameter is exposed.
+ */
+function RemoteCard({ node, allNodes, isSel, onDrag, onDelete, onSelect }: {
   node: NodeData; allNodes: NodeData[]; isSel: boolean;
   onDrag: (e: React.MouseEvent, id: string) => void;
-  onUpdate: (id: string, k: string, v: any) => void;
   onDelete: (id: string) => void;
   onSelect: (id: string) => void;
-  compact: boolean;
 }) {
   const ac = '#0e4d6b';
   const targetId = node.params.target || '';
@@ -145,99 +138,54 @@ function RemoteCard({ node, allNodes, isSel, onDrag, onUpdate, onDelete, onSelec
 
   const targetNode = allNodes.find(n => n.id === targetId);
   const targetDef = targetNode ? NODE_REGISTRY[targetNode.type] : null;
-  const paramDef = targetDef?.params?.[paramKey];
-  const pMin = paramDef?.min ?? 0;
-  const pMax = paramDef?.max ?? 1;
-  const pStep = paramDef?.step ?? 0.01;
-  const dec = pStep < 0.05 ? 3 : pStep < 1 ? 2 : 1;
+  const targetLabel = targetDef?.label ?? (targetId ? `(${targetId})` : '— unbound —');
+  const paramDisplay = paramKey || '—';
 
-  const candidates = allNodes.filter(n => !isOutputNodeType(n.type) && n.type !== 'remote' && n.id !== node.id);
-  const paramKeys = targetDef ? Object.keys(targetDef.params).filter(k => targetDef.params[k].type === 'float' || targetDef.params[k].type === 'int') : [];
-
-  const rh = HDR + 28 * 3 + 48 + 10;
+  const rh = HDR + 64;
 
   return (
-    <div draggable={false} title="Remote node: bind and drive another node parameter from one control." onMouseDown={e => { e.stopPropagation(); onSelect(node.id); }} style={{
-      position: 'absolute', left: node.x, top: node.y, width: NW_REMOTE, height: rh,
-      background: '#0c0c17', border: `1px solid ${isSel ? ac : ac + '22'}`, borderRadius: 7,
-      boxShadow: isSel ? `0 0 0 2.5px ${ac}50,0 8px 36px #000000cc` : `0 4px 24px #000000aa`,
-      pointerEvents: 'all', overflow: 'visible',
-    }}>
+    <div
+      draggable={false}
+      title="Remote node — open Inspector to edit binding."
+      onMouseDown={e => { e.stopPropagation(); onSelect(node.id); }}
+      style={{
+        position: 'absolute', left: node.x, top: node.y, width: NW_REMOTE, height: rh,
+        background: '#0c0c17', border: `1px solid ${isSel ? ac : ac + '22'}`, borderRadius: 7,
+        boxShadow: isSel ? `0 0 0 2.5px ${ac}50,0 8px 36px #000000cc` : `0 4px 24px #000000aa`,
+        pointerEvents: 'all', overflow: 'visible',
+      }}
+    >
       <div onMouseDown={e => { e.preventDefault(); onDrag(e, node.id); }} style={{
         height: HDR, display: 'flex', alignItems: 'center', padding: '0 10px', gap: 8, cursor: 'grab',
         background: ac, borderBottom: `1px solid ${ac}99`, borderRadius: '6px 6px 0 0', userSelect: 'none',
       }}>
-        <span style={{ fontSize: 10, fontWeight: 700, color: '#ffffff', flex: 1, letterSpacing: .3 }}>Remote</span>
-        <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDelete(node.id); }}
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#ffffff', flex: 1, letterSpacing: .3 }}>{label}</span>
+        <button
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onDelete(node.id); }}
           style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 1px', transition: 'color .12s' }}
-          onMouseEnter={e => e.currentTarget.style.color = '#f87171'} onMouseLeave={e => e.currentTarget.style.color = '#94a3b8'}>x</button>
+          onMouseEnter={e => e.currentTarget.style.color = '#f87171'}
+          onMouseLeave={e => e.currentTarget.style.color = '#94a3b8'}
+        >×</button>
       </div>
-      {!compact ? (
-        <>
-          <div style={{ padding: '4px 10px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
-              <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Target</span>
-              <select value={targetId} onMouseDown={e => e.stopPropagation()}
-                onChange={e => onUpdate(node.id, 'target', e.target.value)}
-                style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', flex: 1 }}>
-                <option value="">-- select --</option>
-                {candidates.map(n => {
-                  const d = NODE_REGISTRY[n.type];
-                  return <option key={n.id} value={n.id}>{d?.label || n.type} ({n.id})</option>;
-                })}
-              </select>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
-              <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Param</span>
-              <select value={paramKey} onMouseDown={e => e.stopPropagation()}
-                onChange={e => {
-                  onUpdate(node.id, 'key', e.target.value);
-                  if (targetNode && e.target.value in targetNode.params) {
-                    onUpdate(node.id, 'value', targetNode.params[e.target.value]);
-                  }
-                }}
-                style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', cursor: 'pointer', outline: 'none', flex: 1 }}>
-                <option value="">-- select --</option>
-                {paramKeys.map(k => <option key={k} value={k}>{k}</option>)}
-              </select>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', height: 28, gap: 6 }}>
-              <span style={{ fontSize: 9, color: '#cbd5e1', letterSpacing: 1, textTransform: 'uppercase', width: 48 }}>Label</span>
-              <input type="text" value={node.params.label || ''} placeholder={paramKey || 'Label'}
-                onMouseDown={e => e.stopPropagation()}
-                onChange={e => onUpdate(node.id, 'label', e.target.value)}
-                style={{ background: '#0b0b17', border: '1px solid #334155', color: '#f1f5f9', borderRadius: 3, padding: '2px 5px', fontSize: 10, fontFamily: 'inherit', outline: 'none', flex: 1 }} />
-            </div>
-          </div>
-          {paramDef && (
-            <div style={{ padding: '4px 10px 8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 10, fontWeight: 600, color: '#e2e8f0', letterSpacing: 0.3 }}>{label}</span>
-                <span style={{ fontSize: 11, color: '#f8fafc', fontFamily: 'monospace' }}>{Number(val).toFixed(dec)}</span>
-              </div>
-              <input type="range" min={pMin} max={pMax} step={pStep} value={val}
-                onMouseDown={e => e.stopPropagation()}
-                onChange={e => onUpdate(node.id, 'value', parseFloat(e.target.value))}
-                style={{ width: '100%', accentColor: '#64748b', cursor: 'pointer', height: 6 }} />
-            </div>
-          )}
-        </>
-      ) : (
-        <div style={{ height: rh - HDR, display: 'grid', placeItems: 'center', color: '#8ea3c8', fontSize: 10, letterSpacing: 0.4 }}>
-          REMOTE LINK
+      <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+          <span style={{ fontSize: 9, color: '#7b8aa6', letterSpacing: 0.6, textTransform: 'uppercase' }}>{targetLabel}</span>
+          <span style={{ fontSize: 11, color: '#f8fafc', fontFamily: 'monospace' }}>{Number(val).toFixed(2)}</span>
         </div>
-      )}
+        <div style={{ fontSize: 9, color: '#6f7a8e', letterSpacing: 0.5, fontFamily: 'monospace' }}>{paramDisplay}</div>
+      </div>
     </div>
   );
 }
 
-export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPorts, allNodes, isSel, isConn, connFrom, connFromPort, connFromType, snapTarget, onDrag, onOut, onIn, onUpdate, onDelete, onSelect, onOpen, previewUrl, compileMs, lodMode = 'full' }: NodeCardProps) {
+export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPorts, allNodes, isSel, isConn, connFrom, connFromPort, connFromType, snapTarget, onDrag, onOut, onIn, onUpdate, onDelete, onSelect, onOpen, previewUrl, compileMs, previewResolution, lodMode = 'full' }: NodeCardProps) {
   const def = NODE_REGISTRY[node.type];
   if (!def) return null;
   const compact = lodMode === 'compact' && !isSel && !isConn;
 
   if (node.type === 'remote' && allNodes) {
-    return <RemoteCard node={node} allNodes={allNodes} isSel={isSel} onDrag={onDrag} onUpdate={onUpdate} onDelete={onDelete} onSelect={onSelect} compact={compact} />;
+    return <RemoteCard node={node} allNodes={allNodes} isSel={isSel} onDrag={onDrag} onDelete={onDelete} onSelect={onSelect} />;
   }
 
   const ac = catColor(node.type);
@@ -259,15 +207,18 @@ export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPort
       boxShadow: isSel ? `0 0 0 2.5px ${ac}50,0 8px 36px #000000cc,inset 0 1px 0 #ffffff08` : `0 4px 24px #000000aa,inset 0 1px 0 #ffffff05`,
       pointerEvents: "all", overflow: "visible", transition: "border-color .1s,box-shadow .1s",
     }}>
-      <div onMouseDown={e => { e.preventDefault(); onDrag(e, node.id); }} style={{
-        height: HDR, display: "flex", alignItems: "center", padding: "0 10px", gap: 8, cursor: "grab",
-        background: ac, borderBottom: `1px solid ${ac}99`, borderRadius: "6px 6px 0 0", userSelect: "none",
-      }}>
-        <span style={{ fontSize: 10, fontWeight: 700, color: "#ffffff", flex: 1, letterSpacing: .3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{def.label}</span>
-        <span style={{ fontSize: 8, color: '#dbe6ffcc', letterSpacing: 0.4, textTransform: 'uppercase' }}>{catMeta?.label ?? def.category}</span>
+      <div
+        onMouseDown={e => { e.preventDefault(); onDrag(e, node.id); }}
+        title={catMeta?.label ?? def.category}
+        style={{
+          height: HDR, display: "flex", alignItems: "center", padding: "0 6px", gap: 4, cursor: "grab",
+          background: ac, borderBottom: `1px solid ${ac}99`, borderRadius: "6px 6px 0 0", userSelect: "none",
+        }}
+      >
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#ffffff", flex: 1, letterSpacing: .2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{def.label}</span>
         {!isOutputNodeType(node.type) && (
           <button onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDelete(node.id); }}
-            style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 1px", transition: "color .12s" }}
+            style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: "0 1px", transition: "color .12s" }}
             onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}>×</button>
         )}
         {!isOutputNodeType(node.type) && def.outputs?.length === 1 && (
@@ -279,7 +230,17 @@ export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPort
         )}
       </div>
       {!compact && (
-      <div style={{ height: PREVIEW_H, padding: '6px 10px 4px 10px', boxSizing: 'border-box' }}>
+      <div style={{
+        height: PREVIEW_H,
+        // 2px breathing room above and below the preview, centered
+        // horizontally. Card width is now tuned so the preview almost fills
+        // the inner box (10px symmetrical padding via flex center).
+        padding: '2px 0',
+        boxSizing: 'border-box',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}>
         <div
           style={{
             width: PREVIEW_SIZE,
@@ -291,6 +252,7 @@ export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPort
             boxShadow: 'inset 0 0 0 1px #ffffff08',
             display: 'grid',
             placeItems: 'center',
+            position: 'relative',
           }}
         >
           {previewUrl ? (
@@ -305,6 +267,27 @@ export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPort
               {PREVIEW_SIZE}x{PREVIEW_SIZE}
             </div>
           )}
+          {previewResolution && previewResolution > 0 ? (
+            <div
+              title={`Engine resolution: ${previewResolution}px`}
+              style={{
+                position: 'absolute',
+                bottom: 3,
+                right: 3,
+                padding: '1px 4px',
+                borderRadius: 2,
+                background: 'rgba(8, 12, 22, 0.78)',
+                color: '#8aa0c8',
+                fontSize: 9,
+                fontFamily: 'monospace',
+                letterSpacing: 0.3,
+                pointerEvents: 'none',
+                userSelect: 'none',
+              }}
+            >
+              {previewResolution}
+            </div>
+          ) : null}
         </div>
       </div>
       )}
@@ -362,9 +345,14 @@ export function NodeCard({ node, edges, connectedInputPorts, connectedOutputPort
           </div>
         );
       })}
-      {!compact && Object.entries(node.params).map(([k, v]) => (
-        <Param key={k} pk={k} val={v} meta={def.params[k]} nodeId={node.id} onUpdate={onUpdate} />
-      ))}
+      {/*
+        Inline param widgets used to live here (sliders/selects/checkboxes,
+        plus the levels curve and uniform_color swatch). They moved to the
+        Inspector side panel so each card stays light and the graph view
+        doesn't drag a forest of inputs through every re-render. Outputs
+        with > 1 port still render directly below the inputs; the layout
+        math relies on them sitting where the params used to sit.
+      */}
       {!compact && !isOutputNodeType(node.type) && def.outputs && def.outputs.length > 1 && def.outputs.map((port, i) => {
         const portTypeColor = dataTypeColor(port.type as DataType);
         const connected = connectedOutputPorts

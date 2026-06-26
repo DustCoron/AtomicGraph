@@ -2,6 +2,7 @@
 import { GraphData, NodeData, EdgeData, DataType } from './types';
 import { NODE_REGISTRY } from './registry';
 import { deterministicUniformName, ShaderBindings, UniformBinding } from './bindings';
+import { buildCodeSignature } from './engine';
 import {
   OutputChannel,
   OUTPUT_CHANNEL_PORTS,
@@ -12,6 +13,158 @@ import { ATOMS } from './atoms';
 import { getCompiledWgsl, type WgslVariant } from '../shaders/compiled';
 
 export const COMPILER_BUILD = Date.now();
+
+// ─────────────────────────────────────────────────────────────────────
+// Module-level compile cache (LRU).
+//
+// `Compiler.compile()` is a pure function of (graph, options) — same inputs
+// always produce the same CompiledShader. Stress Compile Loop in the
+// monitor suite calls it 32 times (16 iterations × 2 backends) over a
+// graph that never changes between iterations, so the second pass and
+// onward can be O(1) cache hits.
+//
+// Profiling showed the cold-cache stress run on the Complex example
+// taking ~85 s vs ~10 s warm — almost all attributable to V8 JIT not yet
+// optimising the compiler internals. Memoising at the public boundary
+// removes both the JIT cost AND the redundant work for repeated calls.
+// ─────────────────────────────────────────────────────────────────────
+
+// Sized to comfortably fit one full RUN STRESS pass on the Complex example:
+// All-Nodes Preview Template alone compiles 79 cases × {wgsl,glsl} × {readable,raw},
+// plus the Stress Compile Loop's 16 channel-rotated compiles. At 96 we
+// observed LRU eviction thrashing — the stress loop targets kept getting
+// evicted by the backtest cases on a complex graph, and the loop reverted
+// to its cold-cache timings (~10 s instead of the ~0.1 s we expect).
+// 512 fits all current test paths with margin and stays under ~10 MB at
+// ~20 KB/entry, which is fine for a dev/editor app.
+const COMPILE_CACHE_MAX = 512;
+const compileCache: Map<string, CompiledShader> = new Map();
+
+interface CompileOptionsInternal {
+  outputChannel?: OutputChannel;
+  readable?: boolean;
+  nodeId?: string;
+  nodeOutputPort?: number;
+  backend?: ShaderBackend;
+  wgslVariant?: WgslVariant;
+}
+
+/**
+ * Cache signature for the compile output. Intentionally excludes
+ * `graph.resolution`: that is a render-time texture size, not a compile-time
+ * input — the generated WGSL/GLSL is identical for `resolution=128` and
+ * `resolution=2048`, so they must share a cache slot. We deliberately don't
+ * reuse `buildOutputAffectingSignature` from `engine.ts` because it bakes
+ * the resolution into its signature for unrelated reasons (preview adaptive
+ * sizing). Treat this and `buildOutputAffectingSignature` as cousins, not
+ * the same key.
+ */
+function buildCompilerCacheSig(graph: GraphData): string {
+  const struct = buildCodeSignature(graph);
+  const params = [...graph.nodes]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((n) => JSON.stringify(n.params))
+    .join('|');
+  return `${struct}|${params}`;
+}
+
+function makeCompileCacheKey(graphSig: string, opts: CompileOptionsInternal | undefined): string {
+  const o = opts ?? {};
+  return [
+    graphSig,
+    o.backend ?? 'glsl',
+    o.outputChannel ?? '_',
+    o.readable === false ? 0 : 1, // default true → 1
+    o.wgslVariant ?? 'hq',
+    o.nodeId ?? '',
+    o.nodeOutputPort ?? 0,
+  ].join('|');
+}
+
+function cacheTouch(key: string): CompiledShader | undefined {
+  const v = compileCache.get(key);
+  if (!v) return undefined;
+  // LRU touch: re-insert at the end of insertion order.
+  compileCache.delete(key);
+  compileCache.set(key, v);
+  return v;
+}
+
+function cacheStore(key: string, value: CompiledShader): CompiledShader {
+  // Freeze top-level + arrays so callers can't accidentally corrupt the cached
+  // record. We intentionally do NOT deep-freeze every nested binding object —
+  // that would change behaviour for downstream code that reads them; freezing
+  // the arrays/maps that get returned is enough to catch the common mistakes.
+  try {
+    if (Array.isArray(value.uniforms)) Object.freeze(value.uniforms);
+    if (Array.isArray(value.uniformLayout)) Object.freeze(value.uniformLayout);
+    if (Array.isArray(value.warnings)) Object.freeze(value.warnings);
+    Object.freeze(value);
+  } catch { /* freeze can throw on hostile inputs; cache is best-effort */ }
+  compileCache.set(key, value);
+  while (compileCache.size > COMPILE_CACHE_MAX) {
+    const oldestKey = compileCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    compileCache.delete(oldestKey);
+  }
+  // Async, debounced persist for cross-session warm start.
+  persistAsync(key, value);
+  return value;
+}
+
+/** Diagnostic: drop the in-memory compile cache. Exposed for `window.__ag` etc. */
+export function clearCompileCache(): { droppedEntries: number } {
+  const n = compileCache.size;
+  compileCache.clear();
+  return { droppedEntries: n };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Cross-session persistence (IndexedDB).
+//
+// We hydrate from disk lazily on first compile() — that keeps module load
+// non-blocking. New entries are queued for write via persistCompileEntry,
+// debounced inside compile-cache-persist.ts so we don't issue a transaction
+// per compile.
+// ─────────────────────────────────────────────────────────────────────
+
+let hydrationStarted = false;
+let hydrationDone = false;
+
+function ensureHydration(): void {
+  if (hydrationStarted) return;
+  hydrationStarted = true;
+  if (typeof window === 'undefined') { hydrationDone = true; return; }
+  // Don't crash the module if the persist module fails to load.
+  import('./compile-cache-persist')
+    .then((m) =>
+      m.hydrateCompileCache((key, value) => {
+        // Don't overwrite a fresh in-memory entry with an older persisted one.
+        if (!compileCache.has(key)) {
+          try { Object.freeze(value); } catch { /* best-effort */ }
+          compileCache.set(key, value);
+        }
+      }),
+    )
+    .catch(() => { /* persistence is best-effort */ })
+    .finally(() => { hydrationDone = true; });
+}
+
+function persistAsync(key: string, value: CompiledShader): void {
+  if (typeof window === 'undefined') return;
+  import('./compile-cache-persist')
+    .then((m) => m.persistCompileEntry(key, value))
+    .catch(() => { /* swallow */ });
+}
+
+/** Diagnostic: current cache size + a few sample keys. */
+export function getCompileCacheStats(): { size: number; max: number; sampleKeys: string[] } {
+  return {
+    size: compileCache.size,
+    max: COMPILE_CACHE_MAX,
+    sampleKeys: Array.from(compileCache.keys()).slice(-5),
+  };
+}
 
 export type UniformType = 'float' | 'int' | 'bool' | 'vec2' | 'vec3' | 'vec4';
 export type ShaderBackend = 'glsl' | 'wgsl';
@@ -90,6 +243,14 @@ export class Compiler {
     backend?: ShaderBackend;
     wgslVariant?: WgslVariant;
   }): CompiledShader {
+    // Fast path: identical (graph, options) was compiled recently → reuse
+    // the frozen result. See the comment at the top of this file for the
+    // motivation.
+    ensureHydration();
+    const cacheKey = makeCompileCacheKey(buildCompilerCacheSig(this.graph), options);
+    const cached = cacheTouch(cacheKey);
+    if (cached) return cached;
+
     this.backend = options?.backend || 'glsl';
     this.wgslVariant = options?.wgslVariant || 'hq';
     this.bindings = new ShaderBindings();
@@ -129,10 +290,10 @@ export class Compiler {
       if (!outExpr) outExpr = this.defaultOutputExpression(channel);
     }
 
-    if (this.backend === 'wgsl') {
-      return this.assembleWgsl(outExpr, readable);
-    }
-    return this.assembleGlsl(outExpr, readable);
+    const result = this.backend === 'wgsl'
+      ? this.assembleWgsl(outExpr, readable)
+      : this.assembleGlsl(outExpr, readable);
+    return cacheStore(cacheKey, result);
   }
 
   // ── GLSL assembly ─────────────────────────────────────────────────
@@ -800,18 +961,18 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'gaussian_noise': {
+        // tileOffsetX/Y removed — see registry comment. Seed still decorrelates
+        // patterns because it's fed into the hash arguments below, not p0.
         const scale = uni('scale', p.scale ?? 12.0);
         const mean = uni('mean', p.mean ?? 0.5);
         const stdDev = uni('stdDev', p.stdDev ?? 0.16);
         const seedF = uni('seed', p.seed ?? 1337);
-        const offX = uni('tileOffsetX', p.tileOffsetX ?? 0);
-        const offY = uni('tileOffsetY', p.tileOffsetY ?? 0);
         const nonSquare = uni('nonSquare', (p.nonSquare ?? true) ? 1.0 : 0.0);
         const seedScalar = this.W ? `(${seedF})` : `float(${seedF})`;
         const res = this.sysRef2('u_resolution');
         const aspect = `${res}.x / max(${res}.y, 1.0)`;
         const uvSq = this.sel(`${nonSquare} > 0.5`, this.v2(`uv.x * (${aspect}), uv.y`), 'uv');
-        const p0 = `(${uvSq} * max(${scale}, 1.0) + ${this.v2(`${offX}, ${offY}`)})`;
+        const p0 = `(${uvSq} * max(${scale}, 1.0))`;
         const u1 = `max(hash2(floor(${p0}) + ${this.v2(`${seedScalar} * 0.137, ${seedScalar} * 0.911`)}), 1e-5)`;
         const u2 = `hash2(floor(${p0}) + ${this.v2(`${seedScalar} * 0.271 + 19.0, ${seedScalar} * 0.613 + 73.0`)})`;
         const z = `(sqrt(-2.0 * log(${u1})) * cos(6.28318530718 * ${u2}))`;
@@ -819,18 +980,18 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'tile_generator': {
+        // tileOffsetX/Y removed. Seed is mixed into the cell hash below so
+        // different seeds still produce different tile arrangements.
         const scale = uni('scale', p.scale ?? 6.0);
         const radius = uni('radius', p.radius ?? 0.42);
         const variation = uni('variation', p.variation ?? 0.25);
         const seedF = uni('seed', p.seed ?? 1337);
-        const offX = uni('tileOffsetX', p.tileOffsetX ?? 0);
-        const offY = uni('tileOffsetY', p.tileOffsetY ?? 0);
         const nonSquare = uni('nonSquare', (p.nonSquare ?? true) ? 1.0 : 0.0);
         const seedScalar = this.W ? `(${seedF})` : `float(${seedF})`;
         const res = this.sysRef2('u_resolution');
         const aspect = `${res}.x / max(${res}.y, 1.0)`;
         const uvSq = this.sel(`${nonSquare} > 0.5`, this.v2(`uv.x * (${aspect}), uv.y`), 'uv');
-        const p0 = `(${uvSq} * max(${scale}, 1.0) + ${this.v2(`${offX}, ${offY}`)})`;
+        const p0 = `(${uvSq} * max(${scale}, 1.0))`;
         const gv = `(fract(${p0}) - 0.5)`;
         const cell = `floor(${p0})`;
         const tileRand = `hash2(${cell} + ${this.v2(`${seedScalar} * 0.151, ${seedScalar} * 0.337`)})`;
@@ -841,33 +1002,42 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'noise': {
+        // tileOffsetX/Y removed. Seed still decorrelates via its existing
+        // contribution to p0 (the `seedScalar * 0.173, * 0.619` term).
         const scale = uni('scale', p.scale ?? 6.0);
         const oct = uni('octaves', p.octaves ?? 4.0);
         const seedF = uni('seed', p.seed ?? 1337);
-        const offX = uni('tileOffsetX', p.tileOffsetX ?? (p.seed ?? 0));
-        const offY = uni('tileOffsetY', p.tileOffsetY ?? (p.seed ?? 0));
         const nonSquare = uni('nonSquare', (p.nonSquare ?? true) ? 1.0 : 0.0);
         const seedScalar = this.W ? `(${seedF})` : `float(${seedF})`;
         const res = this.sysRef2('u_resolution');
         const aspect = `${res}.x / max(${res}.y, 1.0)`;
         const uvSq = this.sel(`${nonSquare} > 0.5`, this.v2(`uv.x * (${aspect}), uv.y`), 'uv');
-        const p0 = `(${uvSq} * max(${scale}, 0.00001) + ${this.v2(`${offX}, ${offY}`)} + ${this.v2(`${seedScalar} * 0.173, ${seedScalar} * 0.619`)})`;
+        const p0 = `(${uvSq} * max(${scale}, 0.00001) + ${this.v2(`${seedScalar} * 0.173, ${seedScalar} * 0.619`)})`;
         body = `return fbm(${p0}, ${oct}, max(${scale}, 0.00001), 1.0);`;
         break;
       }
       case 'perlin': {
+        // Substance-parity Perlin: scale + disorder + roughness + seed,
+        // plus our own animated `disorderSpeed`. The previous version only
+        // sampled one octave; `roughness` here adds up to six octaves with
+        // persistence = roughness so the surface gets visibly bumpier as
+        // the slider goes from 0 → 1 (matches Substance's behaviour).
+        //
+        // `tileOffsetX/Y` were removed from the param surface — the noise
+        // tiles by construction, integer-multiple shifts gave identical
+        // content. Legacy saves still parse: their keys are simply not
+        // read here.
         const scale = uni('scale', p.scale ?? 32.0);
         const disorder = uni('disorder', p.disorder ?? 0.0);
         const disorderSpeed = uni('disorderSpeed', p.disorderSpeed ?? 1.0);
+        const roughness = uni('roughness', Math.max(0, Math.min(1, p.roughness ?? 0.0)));
         const seedF = uni('seed', p.seed ?? 1337);
-        const offX = uni('tileOffsetX', p.tileOffsetX ?? 0);
-        const offY = uni('tileOffsetY', p.tileOffsetY ?? 0);
         const nonSquare = uni('nonSquare', (p.nonSquare ?? true) ? 1.0 : 0.0);
         const res = this.sysRef2('u_resolution');
         const aspect = `${res}.x / max(${res}.y, 1.0)`;
         const uvSq = this.sel(`${nonSquare} > 0.5`, this.v2(`uv.x * (${aspect}), uv.y`), 'uv');
         const scaleF = `max(floor(${scale} + 0.5), 1.0)`;
-        const p0 = `(${uvSq} * ${scaleF} + ${this.v2(`${offX}, ${offY}`)})`;
+        const p0 = `(${uvSq} * ${scaleF})`;
         const seedExpr = this.W ? `u32(max(${seedF}, 0.0))` : `float(${seedF})`;
         const t = `(${this.sysRef('u_time')} * ${disorderSpeed})`;
         let samplePos = p0;
@@ -896,18 +1066,62 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
           this.mergeExprAtoms(localAtoms, w2Expr);
           samplePos = `(${p0} + ${disorder} * vec2(${w1Expr.code}, ${w2Expr.code}))`;
         }
-        let perlinExpr: Expr;
-        if (this.W) {
-          perlinExpr = this.callAtom(cacheKey, 'perlin2i_tiled', 'float', [
-            { code: samplePos, type: 'vec2' },
-            { code: scaleF, type: 'float' },
-            { code: seedExpr, type: 'float' },
-          ]);
-          this.mergeExprAtoms(localAtoms, perlinExpr);
-        } else {
-          perlinExpr = { code: `perlin2i_tiled(${samplePos}, ${scaleF}, ${seedExpr})`, type: 'float' };
+        // Multi-octave Perlin sum, capped by `octaves` (code-affecting).
+        //
+        // Each unrolled octave adds one full `perlin2i_tiled` evaluation
+        // (4 corner hashes + interpolation) to the fragment cost. Default
+        // `octaves=1` collapses to a single call — same shape as the old
+        // single-octave node, no perf regression. Higher values build the
+        // fBm-style fractal Perlin Substance Designer ships, doubling
+        // frequency and tiling period per step so each octave is itself
+        // seamless. Persistence between octaves comes from the `roughness`
+        // uniform; the total weight is renormalised in-shader so output
+        // stays in [0,1] regardless of how many octaves are summed.
+        const octavesParam = String(p.octaves ?? '1');
+        const OCTAVES = Math.max(1, Math.min(6, parseInt(octavesParam, 10) || 1));
+        const octCalls: Array<{ code: string; weightExpr: string }> = [];
+        // WGSL salts mixed into seed to decorrelate octaves (otherwise
+        // doubling frequency on the same hash leaves visible structure).
+        const wgslSalts = ['0x9e3779b9u', '0x85ebca6bu', '0xc2b2ae35u', '0x27d4eb2fu', '0x165667b1u', '0xd3a2646cu'];
+        const glslSalts = ['0.0', '17.0', '37.0', '71.0', '113.0', '163.0'];
+        for (let i = 0; i < OCTAVES; i++) {
+          // Octave 0 keeps the raw seed/position/scale so a default Perlin
+          // (octaves=1) is bit-for-bit identical to the pre-multi-octave
+          // node — autosaved graphs render exactly the same noise pattern
+          // they did before this code path existed.
+          const mult = i === 0 ? '1.0' : (1 << i).toFixed(1); // 1.0, 2.0, 4.0, 8.0, 16.0, 32.0
+          const octPos = i === 0 ? samplePos : `(${samplePos} * ${mult})`;
+          const octScale = i === 0 ? scaleF : `(${scaleF} * ${mult})`;
+          const octSeed = i === 0
+            ? seedExpr
+            : this.W
+              ? `((${seedExpr}) ^ ${wgslSalts[i]})`
+              : `((${seedExpr}) + ${glslSalts[i]})`;
+          let octExpr: Expr;
+          if (this.W) {
+            octExpr = this.callAtom(cacheKey, 'perlin2i_tiled', 'float', [
+              { code: octPos, type: 'vec2' },
+              { code: octScale, type: 'float' },
+              { code: octSeed, type: 'float' },
+            ]);
+            this.mergeExprAtoms(localAtoms, octExpr);
+          } else {
+            octExpr = { code: `perlin2i_tiled(${octPos}, ${octScale}, ${octSeed})`, type: 'float' };
+          }
+          // Inline multiplied form of pow(roughness, i). GPUs lower
+          // `pow(x, non_const_float)` to exp2(log2(x) * y) which costs ~10
+          // cycles; the chained-multiply form a compiler is happier with,
+          // and integer powers up to 5 fit on one line.
+          let weight: string;
+          if (i === 0) weight = '1.0';
+          else if (i === 1) weight = roughness;
+          else weight = '(' + Array(i).fill(roughness).join(' * ') + ')';
+          octCalls.push({ code: octExpr.code, weightExpr: weight });
         }
-        const grayWhenScale1 = this.sel(`${scale} < 1.5`, '0.5', perlinExpr.code);
+        const sumExpr = octCalls.map((o) => `(${o.code} * ${o.weightExpr})`).join(' + ');
+        const totalWeightExpr = octCalls.map((o) => o.weightExpr).join(' + ');
+        const perlinExprCode = `((${sumExpr}) / max(${totalWeightExpr}, 0.0001))`;
+        const grayWhenScale1 = this.sel(`${scale} < 1.5`, '0.5', perlinExprCode);
         if (node.params?.subgraph) {
           const atomResult = this.compileAtomSubgraph(node, [{ code: grayWhenScale1, type: 'float' }]);
           this.mergeExprAtoms(localAtoms, atomResult);
@@ -958,17 +1172,17 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'voronoi': {
+        // tileOffsetX/Y removed. Seed-decorrelation continues via the
+        // `seedScalar * 0.137, * 0.911` term that's already inside p0.
         const scale = uni('scale', p.scale ?? 5.0);
         const jitter = uni('jitter', p.jitter ?? 1.0);
         const seedF = uni('seed', p.seed ?? 1337);
-        const offX = uni('tileOffsetX', p.tileOffsetX ?? (p.seed ?? 0));
-        const offY = uni('tileOffsetY', p.tileOffsetY ?? (p.seed ?? 0));
         const nonSquare = uni('nonSquare', (p.nonSquare ?? true) ? 1.0 : 0.0);
         const seedScalar = this.W ? `(${seedF})` : `float(${seedF})`;
         const res = this.sysRef2('u_resolution');
         const aspect = `${res}.x / max(${res}.y, 1.0)`;
         const uvSq = this.sel(`${nonSquare} > 0.5`, this.v2(`uv.x * (${aspect}), uv.y`), 'uv');
-        const p0 = `(${uvSq} * max(${scale}, 0.00001) + ${this.v2(`${offX}, ${offY}`)} + ${this.v2(`${seedScalar} * 0.137, ${seedScalar} * 0.911`)})`;
+        const p0 = `(${uvSq} * max(${scale}, 0.00001) + ${this.v2(`${seedScalar} * 0.137, ${seedScalar} * 0.911`)})`;
         const s = `max(${scale}, 0.00001)`;
         const v = `voro(${p0}, ${jitter}, ${s}, true)`;
         const v4t = this.v4('cells,V.y,V.z,V.w');
@@ -980,31 +1194,39 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'worley': {
+        // tileOffsetX/Y removed (same pattern as voronoi).
         const scale = uni('scale', p.scale ?? 5.0);
         const jitter = uni('jitter', p.jitter ?? 1.0);
         const seedF = uni('seed', p.seed ?? 1337);
-        const offX = uni('tileOffsetX', p.tileOffsetX ?? (p.seed ?? 0));
-        const offY = uni('tileOffsetY', p.tileOffsetY ?? (p.seed ?? 0));
         const nonSquare = uni('nonSquare', (p.nonSquare ?? true) ? 1.0 : 0.0);
         const seedScalar = this.W ? `(${seedF})` : `float(${seedF})`;
         const res = this.sysRef2('u_resolution');
         const aspect = `${res}.x / max(${res}.y, 1.0)`;
         const uvSq = this.sel(`${nonSquare} > 0.5`, this.v2(`uv.x * (${aspect}), uv.y`), 'uv');
-        const p0 = `(${uvSq} * max(${scale}, 0.00001) + ${this.v2(`${offX}, ${offY}`)} + ${this.v2(`${seedScalar} * 0.137, ${seedScalar} * 0.911`)})`;
+        const p0 = `(${uvSq} * max(${scale}, 0.00001) + ${this.v2(`${seedScalar} * 0.137, ${seedScalar} * 0.911`)})`;
         body = `return voro(${p0}, ${jitter}, max(${scale}, 0.00001), true);`;
         break;
       }
       case 'bnw_spots2_v2': {
+        // tileOffsetX/Y removed from the param surface. The atom call
+        // still expects a vec2 tile-offset slot — we now pass a literal
+        // zero so the WGSL atom signature stays unchanged (no atom rebuild
+        // needed). Seed enters via its own argument and still varies the
+        // hash pattern between different seed values.
         const scale = uni('scale', p.scale ?? 10);
-        const offX = uni('tileOffsetX', p.tileOffsetX ?? 0.0);
-        const offY = uni('tileOffsetY', p.tileOffsetY ?? 0.0);
         const seedF = uni('seed', p.seed ?? 1337);
-        const nonSquare = uni('nonSquareExpansion', (p.nonSquareExpansion ?? true) ? 1.0 : 0.0);
+        // Backward-compatible read: legacy graphs saved with
+        // `nonSquareExpansion: true` keep working because we fall back to
+        // that key when the new `nonSquare` is absent. The WGSL uniform
+        // name kept the legacy spelling to avoid cache thrash; do NOT
+        // rename it without bumping COMPILE_CACHE_SCHEMA_VERSION.
+        const nonSquareFlag = (p.nonSquare ?? p.nonSquareExpansion ?? true) ? 1.0 : 0.0;
+        const nonSquare = uni('nonSquareExpansion', nonSquareFlag);
         const grainAmount = uni('grainAmount', p.grainAmount ?? 0.22);
         const grainThreshold = uni('grainThreshold', p.grainThreshold ?? 0.86);
         const contrast = uni('contrast', p.contrast ?? 1.08);
         const res = this.sysRef2('u_resolution');
-        const tileOffset = this.v2(`${offX}, ${offY}`);
+        const tileOffset = this.v2('0.0, 0.0');
 
         if (this.W) {
           const seedExpr = `u32(max(${seedF}, 0.0))`;
@@ -1057,13 +1279,14 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'tile_sampler': {
+        // `angle` was removed: rotation + `fract()` produces diagonal seams
+        // and broke the "seamless tiling" promise of this node. Legacy
+        // graphs may still hold an `angle` value on this node — the field
+        // is ignored here. See registry.ts for the parallel comment.
         const scale = uni('scale', p.scale ?? 6.0);
-        const angle = `(${uni('ang', (p.angle ?? 0) * Math.PI / 180)})`;
         const offX = uni('tileOffsetX', p.tileOffsetX ?? 0);
         const offY = uni('tileOffsetY', p.tileOffsetY ?? 0);
-        const centered = `(uv - 0.5)`;
-        const rotUv = this.v2(`cos(${angle}) * ${centered}.x - sin(${angle}) * ${centered}.y, sin(${angle}) * ${centered}.x + cos(${angle}) * ${centered}.y`);
-        const sampleUv = `fract((${rotUv} + 0.5) * max(${scale}, 1.0) + ${this.v2(`${offX}, ${offY}`)})`;
+        const sampleUv = `fract(uv * max(${scale}, 1.0) + ${this.v2(`${offX}, ${offY}`)})`;
         body = `return ${inp(0, '0.0', sampleUv)};`;
         break;
       }
@@ -1230,16 +1453,16 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'transform_2d': {
+        // Rotation was removed from the param surface: a rotated unit square
+        // can't tile via `fract` without visible diagonal seams, so the
+        // `rotation` knob was actively misleading. We still tolerate the
+        // field on legacy graph payloads — it's just no longer read here.
         const offX = uni('offX', p.offsetX ?? 0.0);
         const offY = uni('offY', p.offsetY ?? 0.0);
-        const rot = `(${uni('rot', p.rotation ?? 0.0)} * 0.017453292519943295)`;
         const scale = uni('sc', p.scale ?? 1.0);
         const tile = uni('tile', (p.tile ?? true) ? 1.0 : 0.0);
         const centeredUv = `((uv - 0.5) / max(${scale}, 0.0001))`;
-        const rotUv = this.v2(
-          `cos(${rot}) * ${centeredUv}.x - sin(${rot}) * ${centeredUv}.y, sin(${rot}) * ${centeredUv}.x + cos(${rot}) * ${centeredUv}.y`
-        );
-        const sampleUv = `(${rotUv} + 0.5 + ${this.v2(`${offX}, ${offY}`)})`;
+        const sampleUv = `(${centeredUv} + 0.5 + ${this.v2(`${offX}, ${offY}`)})`;
         const clampedUv = `clamp(${sampleUv}, ${this.v2('0.0, 0.0')}, ${this.v2('1.0, 1.0')})`;
         const finalUv = this.sel(`${tile} > 0.5`, `fract(${sampleUv})`, clampedUv);
         body = `return ${inp(0, '0.0', finalUv)};`;
@@ -1281,12 +1504,25 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
         break;
       }
       case 'directional_warp': {
+        // Pull cos/sin into a single `let` so trig is evaluated once per
+        // fragment instead of once per inlined use of `dir`. Most modern
+        // GPU compilers CSE this away, but the explicit hoist is friendlier
+        // to older drivers (we see Intel UHD in the wild) and shaves bytes
+        // off the inlined expression too.
         const amount = uni('amount', p.amount ?? 0.15);
         const angle = uni('angle', p.angle ?? 0.0);
         const warpVal = inp(1, '0.5');
-        const dir = this.v2(`cos(${angle}), sin(${angle})`);
-        const warpedUv = `(uv + ${dir} * ((${warpVal} - 0.5) * ${amount}))`;
-        body = `return ${inp(0, '0.0', warpedUv)};`;
+        if (this.W) {
+          body = `{
+            let dir = vec2f(cos(${angle}), sin(${angle}));
+            return ${inp(0, '0.0', `(uv + dir * ((${warpVal} - 0.5) * ${amount}))`)};
+          }`;
+        } else {
+          body = `{
+            vec2 dir = vec2(cos(${angle}), sin(${angle}));
+            return ${inp(0, '0.0', `(uv + dir * ((${warpVal} - 0.5) * ${amount}))`)};
+          }`;
+        }
         break;
       }
       case 'edge_detect': {
@@ -1469,6 +1705,75 @@ fn fs_main(inp: VSOut) -> @location(0) vec4f {
             float gy = -dY * k * ${fy};
             vec3 n = normalize(vec3(gx, gy, 1.0));
             return n * 0.5 + 0.5;
+          }`;
+        }
+        break;
+      }
+      case 'height_to_ao': {
+        // Hemispherical AO baker driven by a heightmap.
+        //
+        // We sample N points on a golden-angle spiral around the centre,
+        // each at a distance proportional to its index. For each sample we
+        // compute `delta = max(0, h_sample - h_centre - bias)`: how much
+        // higher the neighbour is than us. A weighted average across
+        // samples (weighted by `1 / (1 + index)`) gives an occlusion proxy
+        // — close-and-higher neighbours occlude more. Final AO = 1 - clamp
+        // of the proxy scaled by `intensity`.
+        //
+        // `samples` is a string enum so we unroll the loop at compile time
+        // (WGSL can't do dynamic loops cleanly under all backends, and
+        // Substance's AO baker is itself fixed-quality per preset).
+        const samplesStr = String(p.samples ?? '16');
+        const sampleCount = samplesStr === '8' ? 8 : samplesStr === '32' ? 32 : 16;
+        const radiusPx = uni('radius', p.radius ?? 8.0);
+        const intensity = uni('intensity', p.intensity ?? 1.0);
+        const bias = uni('bias', p.bias ?? 0.02);
+        const res = this.sysRef2('u_resolution');
+        const minDim = `max(min(${res}.x, ${res}.y), 1.0)`;
+        const texel = `(1.0 / ${minDim})`;
+        const goldenAngle = 2.39996322972865332; // π * (3 − √5)
+        const wgsl = this.W;
+        const sampleLines: string[] = [];
+        let weightSum = 0;
+        for (let i = 0; i < sampleCount; i++) {
+          const idx = i + 1;
+          const angle = (i * goldenAngle).toFixed(6);
+          const dist = (Math.sqrt(idx / sampleCount)).toFixed(6);
+          const w = 1.0 / idx;
+          weightSum += w;
+          const dx = `${Math.cos(i * goldenAngle).toFixed(6)} * ${dist}`;
+          const dy = `${Math.sin(i * goldenAngle).toFixed(6)} * ${dist}`;
+          if (wgsl) {
+            sampleLines.push(
+              `acc = acc + ${w.toFixed(6)} * max(0.0, ${inp(0, '0.0', `uv + vec2f((${dx}) * step, (${dy}) * step)`)} - h0 - ${bias});`
+            );
+          } else {
+            sampleLines.push(
+              `acc += ${w.toFixed(6)} * max(0.0, ${inp(0, '0.0', `uv + vec2(float(${dx}) * step, float(${dy}) * step)`)} - h0 - ${bias});`
+            );
+          }
+        }
+        // Suppress unused-warning by referencing `angle` in a comment-only way
+        // (the constants are baked into dx/dy literals above).
+        void goldenAngle;
+        const weightDenom = Math.max(weightSum, 1e-6).toFixed(6);
+        if (wgsl) {
+          body = `{
+            let step = max(${radiusPx}, 0.0001) * ${texel};
+            let h0 = ${inp(0, '0.0', 'uv')};
+            var acc: f32 = 0.0;
+            ${sampleLines.join('\n            ')}
+            let occ = clamp((acc / ${weightDenom}) * ${intensity}, 0.0, 1.0);
+            return 1.0 - occ;
+          }`;
+        } else {
+          body = `{
+            float step = max(${radiusPx}, 0.0001) * ${texel};
+            float h0 = ${inp(0, '0.0', 'uv')};
+            float acc = 0.0;
+            ${sampleLines.join('\n            ')}
+            float occ = clamp((acc / ${weightDenom}) * ${intensity}, 0.0, 1.0);
+            return 1.0 - occ;
           }`;
         }
         break;

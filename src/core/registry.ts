@@ -58,88 +58,118 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
   gaussian_noise: {
     type: 'gaussian_noise', label: 'Gaussian Noise', category: 'gen',
     inputs: [], outputs: [floatOut()],
+    // `tileOffsetX/Y` were removed for the same reason they went away from
+    // Perlin: the noise is tileable by construction and shifting by integer
+    // multiples gives identical content. Legacy graphs keep parsing — the
+    // compiler silently ignores those keys.
     params: {
       scale: param('float', 12, 1, 64, 1),
       mean: param('float', 0.5, 0, 1, 0.01),
       stdDev: param('float', 0.16, 0.01, 0.5, 0.01),
       seed: param('int', 1337, 0, 2147483647, 1),
-      tileOffsetX: param('float', 0, -10000, 10000, 0.01),
-      tileOffsetY: param('float', 0, -10000, 10000, 0.01),
-      nonSquare: param('bool', true)
+      nonSquare: param('bool', true),
     }
   },
   tile_generator: {
     type: 'tile_generator', label: 'Tile Generator', category: 'gen',
     inputs: [], outputs: [floatOut()],
+    // tileOffsetX/Y removed: see comment on `gaussian_noise`. Same logic.
     params: {
       scale: param('float', 6, 1, 64, 1),
       shape: param('select', 'square', undefined, undefined, undefined, ['square', 'dot']),
       radius: param('float', 0.42, 0.05, 0.49, 0.01),
       variation: param('float', 0.25, 0, 1, 0.01),
       seed: param('int', 1337, 0, 2147483647, 1),
-      tileOffsetX: param('float', 0, -10000, 10000, 0.01),
-      tileOffsetY: param('float', 0, -10000, 10000, 0.01),
-      nonSquare: param('bool', true)
+      nonSquare: param('bool', true),
     }
   },
   noise: {
-    type: 'noise', label: 'Noise fBm v2', category: 'gen',
+    type: 'noise', label: 'Noise fBm', category: 'gen',
     inputs: [], outputs: [floatOut()],
+    // tileOffsetX/Y removed — same rationale as Perlin / gaussian_noise.
+    // The fBm `octaves` knob stays as a float (1..8) because the underlying
+    // `fbm()` atom in atoms.ts already takes octaves as a dynamic uniform
+    // (it loops with a mask), so the slider is live-updateable without
+    // recompile cost.
     params: {
       scale: param('float', 6, 0.25, 64, 0.25),
       octaves: param('float', 4, 1, 8, 1),
       seed: param('int', 1337, 0, 2147483647, 1),
-      tileOffsetX: param('float', 0, -10000, 10000, 0.01),
-      tileOffsetY: param('float', 0, -10000, 10000, 0.01),
-      nonSquare: param('bool', true)
+      nonSquare: param('bool', true),
     }
   },
   perlin: {
-    type: 'perlin', label: 'Perlin Noise v2', category: 'gen',
+    type: 'perlin', label: 'Perlin Noise', category: 'gen',
     inputs: [], outputs: [floatOut()],
+    // Substance-Designer-parity surface:
+    //   * `scale`     — tile count along the longest axis (their "Scale")
+    //   * `disorder`  — adds warped offsets to the sample position
+    //                   (their "Disorder")
+    //   * `roughness` — single knob controlling multi-octave persistence
+    //                   (their "Roughness"). 0 = effectively single-octave
+    //                   smooth, 1 = all six octaves equally weighted.
+    //   * `seed`      — RNG seed (their "Random Seed")
+    // Our own additions kept past parity:
+    //   * `disorderSpeed` — time-modulates the disorder warp (no equivalent
+    //                       in Substance; their nodes are static).
+    //   * `nonSquare`     — aspect-aware UV when graph isn't 1:1.
+    // Removed:
+    //   * `tileOffsetX/Y` — practical effect minor; the noise is tileable
+    //                       by construction and shifting integer multiples
+    //                       just returns identical content. Old graphs may
+    //                       still carry the keys — silently ignored.
     params: {
       scale: param('float', 32, 1, 64, 1),
       disorder: param('float', 0, 0, 1, 0.01),
       disorderSpeed: param('float', 1, 0, 2, 0.01),
+      // Octave count is intentionally code-affecting (select with integer
+      // strings): each value above 1 unrolls another `perlin2i_tiled` call
+      // in the shader, so going from 1 → 6 octaves costs 6× the fragment
+      // work. Default is `1` to keep parity with old single-octave Perlin
+      // when no one has opted in; raise it for fBm-style fractal Perlin.
+      octaves: param('select', '1', undefined, undefined, undefined, ['1', '2', '3', '4', '5', '6']),
+      // Roughness is the per-octave amplitude persistence — only meaningful
+      // when `octaves > 1`. Kept as a uniform so the slider live-updates
+      // without recompile.
+      roughness: param('float', 0.5, 0, 1, 0.01),
       seed: param('int', 1337, 0, 2147483647, 1),
-      tileOffsetX: param('float', 0, -10000, 10000, 0.01),
-      tileOffsetY: param('float', 0, -10000, 10000, 0.01),
-      nonSquare: param('bool', true)
+      nonSquare: param('bool', true),
     }
   },
   worley: {
-    type: 'worley', label: 'Worley Noise v2', category: 'gen',
+    type: 'worley', label: 'Worley Noise', category: 'gen',
     inputs: [], outputs: [{ id: 'out', type: 'vec4', label: 'F1/F2/Edge/ID' }],
+    // tileOffsetX/Y removed — same rationale.
     params: {
       scale: param('float', 5, 1, 20, 0.5),
       jitter: param('float', 1, 0, 1, 0.05),
       seed: param('int', 1337, 0, 2147483647, 1),
-      tileOffsetX: param('float', 0, -10000, 10000, 0.01),
-      tileOffsetY: param('float', 0, -10000, 10000, 0.01),
-      nonSquare: param('bool', true)
+      nonSquare: param('bool', true),
     }
   },
   voronoi: {
     type: 'voronoi', label: 'Voronoi', category: 'gen',
     inputs: [], outputs: [{ id: 'out', type: 'vec4', label: 'F1/F2/Edge/ID' }],
+    // tileOffsetX/Y removed — same rationale.
     params: {
       scale: param('float', 5, 1, 64, 0.5),
       jitter: param('float', 1, 0, 1, 0.05),
       seed: param('int', 1337, 0, 2147483647, 1),
-      tileOffsetX: param('float', 0, -10000, 10000, 0.01),
-      tileOffsetY: param('float', 0, -10000, 10000, 0.01),
-      nonSquare: param('bool', true)
+      nonSquare: param('bool', true),
     }
   },
   bnw_spots2_v2: {
-    type: 'bnw_spots2_v2', label: 'BnW Spots 2 (v2)', category: 'noises',
+    type: 'bnw_spots2_v2', label: 'BnW Spots 2', category: 'noises',
     inputs: [], outputs: [floatOut()],
+    // tileOffsetX/Y removed — same rationale as the other noise generators.
     params: {
       scale: param('int', 10, 1, 32, 1),
-      tileOffsetX: param('float', 0, -10000, 10000, 0.01),
-      tileOffsetY: param('float', 0, -10000, 10000, 0.01),
       seed: param('int', 1337, 0, 2147483647, 1),
-      nonSquareExpansion: param('bool', true),
+      // Renamed from `nonSquareExpansion` to `nonSquare` for consistency
+      // with all other noise generators. Legacy graphs that still carry
+      // `nonSquareExpansion` keep their stored value because compiler.ts
+      // falls back to that field name.
+      nonSquare: param('bool', true),
       grainAmount: param('float', 0.22, 0, 1, 0.005),
       grainThreshold: param('float', 0.86, 0, 1, 0.005),
       contrast: param('float', 1.08, 0.25, 3, 0.01),
@@ -198,7 +228,10 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
     outputs: [floatOut()],
     params: {
       scale: param('float', 6, 1, 64, 1),
-      angle: param('float', 0, -180, 180, 1),
+      // `angle` was removed for the same reason as `transform_2d.rotation`:
+      // rotation followed by `fract()` introduces diagonal seams that break
+      // seamless tiling — the whole point of this node. Legacy graphs may
+      // still carry an `angle` value; the compiler silently ignores it.
       tileOffsetX: param('float', 0, -10000, 10000, 0.01),
       tileOffsetY: param('float', 0, -10000, 10000, 0.01),
     }
@@ -465,7 +498,10 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
     params: {
       offsetX: param('float', 0.0, -2, 2, 0.005),
       offsetY: param('float', 0.0, -2, 2, 0.005),
-      rotation: param('float', 0.0, -180, 180, 0.5),
+      // `rotation` was removed: any non-trivial angle breaks seamless tiling
+      // when `tile=true` (a rotated unit square can't be fract-tiled without
+      // visible diagonal seams). Old graphs may still carry a `rotation`
+      // value on this node — the compiler silently ignores it.
       scale: param('float', 1.0, 0.05, 8, 0.01),
       tile: param('bool', true),
     }
@@ -526,6 +562,23 @@ export const NODE_REGISTRY: Record<string, NodeDefinition> = {
       strength: param('float', 2.0, 0.01, 4.0, 0.02),
       radius: param('float', 1.0, 0.5, 4.0, 0.1),
       flipY: param('bool', false)
+    }
+  },
+  height_to_ao: {
+    type: 'height_to_ao', label: 'Height to AO', category: 'filter',
+    inputs: [floatIn('Height')],
+    outputs: [floatOut()],
+    // Spiral-sampled approximation of ambient occlusion from a heightmap.
+    // `radius` is in pixels; `samples` controls quality vs cost (16 is the
+    // floor for "doesn't look noisy", 32 looks clean); `intensity` scales
+    // the height difference contribution (higher = darker creases).
+    // The Complex example currently fakes AO with `1 - roughness` — this
+    // is a real baker that respects the actual height geometry.
+    params: {
+      radius: param('float', 8.0, 1.0, 32.0, 0.5),
+      samples: param('select', '16', undefined, undefined, undefined, ['8', '16', '32']),
+      intensity: param('float', 1.0, 0.0, 4.0, 0.05),
+      bias: param('float', 0.02, 0.0, 0.2, 0.005),
     }
   },
   normal_combine: {

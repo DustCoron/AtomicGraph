@@ -6,43 +6,60 @@ import {
 } from './types';
 
 const DEFAULT_LAYOUT: LayoutNode = {
+  // Outer split: main workspace on the left (80%), Inspector on the right
+  // (20%). Inspector lives in its own column — like the Properties pane in
+  // Substance Designer / Houdini / UE5 Material — instead of being a tab in
+  // the bottom-left panel where it crowded the graph view.
   kind: 'split',
   id: 'root',
   direction: 'horizontal',
-  ratio: 0.62,
+  ratio: 0.80,
   children: [
     {
-      kind: 'split', id: 's-graph-explorer', direction: 'vertical', ratio: 0.78,
+      // Inner workspace: original two-column graph+explorer / preview+code
+      // layout. Kept as a nested split so the Inspector column above sits
+      // outside of it cleanly.
+      kind: 'split', id: 's-workspace', direction: 'horizontal', ratio: 0.62,
       children: [
         {
-          kind: 'panel', id: 'p-graph',
-          tabs: [{ id: 'v-graph', type: 'graph', title: 'Graph' }],
-          activeTabId: 'v-graph', pinned: false,
+          kind: 'split', id: 's-graph-explorer', direction: 'vertical', ratio: 0.78,
+          children: [
+            {
+              kind: 'panel', id: 'p-graph',
+              tabs: [{ id: 'v-graph', type: 'graph', title: 'Graph' }],
+              activeTabId: 'v-graph', pinned: false,
+            },
+            {
+              kind: 'panel', id: 'p-explorer',
+              tabs: [{ id: 'v-explorer', type: 'explorer', title: 'Explorer' }],
+              activeTabId: 'v-explorer', pinned: false,
+            },
+          ],
         },
         {
-          kind: 'panel', id: 'p-explorer',
-          tabs: [{ id: 'v-explorer', type: 'explorer', title: 'Explorer' }],
-          activeTabId: 'v-explorer', pinned: false,
+          kind: 'split', id: 's-preview-code', direction: 'vertical', ratio: 0.50,
+          children: [
+            {
+              kind: 'panel', id: 'p-preview',
+              tabs: [
+                { id: 'v-preview', type: 'preview', title: '2D Preview' },
+                { id: 'v-preview3d', type: 'preview3d', title: '3D Preview' },
+              ],
+              activeTabId: 'v-preview', pinned: false,
+            },
+            {
+              kind: 'panel', id: 'p-code',
+              tabs: [{ id: 'v-code', type: 'code', title: 'Code' }],
+              activeTabId: 'v-code', pinned: false,
+            },
+          ],
         },
       ],
     },
     {
-      kind: 'split', id: 's-preview-code', direction: 'vertical', ratio: 0.50,
-      children: [
-        {
-          kind: 'panel', id: 'p-preview',
-          tabs: [
-            { id: 'v-preview', type: 'preview', title: '2D Preview' },
-            { id: 'v-preview3d', type: 'preview3d', title: '3D Preview' },
-          ],
-          activeTabId: 'v-preview', pinned: false,
-        },
-        {
-          kind: 'panel', id: 'p-code',
-          tabs: [{ id: 'v-code', type: 'code', title: 'Code' }],
-          activeTabId: 'v-code', pinned: false,
-        },
-      ],
+      kind: 'panel', id: 'p-inspector',
+      tabs: [{ id: 'v-inspector', type: 'inspector', title: 'Inspector' }],
+      activeTabId: 'v-inspector', pinned: false,
     },
   ],
 };
@@ -90,6 +107,110 @@ function ensurePreviewTabsInFloating(floating: FloatingPanel[]): FloatingPanel[]
     ...f,
     panel: ensurePreviewTabAdjacencyInPanel(f.panel),
   }));
+}
+
+/**
+ * Inspector lives in a dedicated right-side column at the root level —
+ * matching the Properties pane layout used by Substance Designer, Houdini,
+ * UE5 Material Editor, etc. Stuffing it into the bottom-left panel competed
+ * for vertical real estate with the graph view.
+ *
+ * Migration policy:
+ *   1. If the root is already `[workspace, p-inspector]` (canonical shape),
+ *      leave it alone — idempotent on every boot.
+ *   2. If at least one Inspector tab exists somewhere in the layout, strip
+ *      those tabs (and any panels that become empty) and wrap the remainder
+ *      in a horizontal split with a fresh Inspector column on the right.
+ *      This relocates Inspector for users who got the previous
+ *      "Inspector in p-explorer" version.
+ *   3. If no Inspector tab exists anywhere, leave the layout alone — the
+ *      user closed Inspector intentionally and can re-add it via the
+ *      Workspace dropdown (which calls `addView('inspector', ...)`).
+ */
+function isCanonicalInspectorLayout(root: LayoutNode): boolean {
+  if (root.kind !== 'split' || root.direction !== 'horizontal') return false;
+  const right = root.children[1];
+  if (right.kind !== 'panel') return false;
+  if (right.tabs.length === 0) return false;
+  return right.tabs.every((t) => t.type === 'inspector');
+}
+
+function collectInspectorPanelIds(root: LayoutNode): { panelId: string; hasOtherTabs: boolean }[] {
+  const out: { panelId: string; hasOtherTabs: boolean }[] = [];
+  const walk = (node: LayoutNode) => {
+    if (node.kind === 'panel') {
+      const inspectorCount = node.tabs.filter((t) => t.type === 'inspector').length;
+      if (inspectorCount > 0) {
+        out.push({ panelId: node.id, hasOtherTabs: inspectorCount !== node.tabs.length });
+      }
+      return;
+    }
+    walk(node.children[0]);
+    walk(node.children[1]);
+  };
+  walk(root);
+  return out;
+}
+
+function ensureInspectorOnRight(root: LayoutNode): LayoutNode {
+  if (isCanonicalInspectorLayout(root)) return root;
+
+  const inspectorPanels = collectInspectorPanelIds(root);
+  if (inspectorPanels.length === 0) {
+    // User has no Inspector anywhere — respect that choice. They can re-add
+    // it from the Workspace dropdown.
+    return root;
+  }
+
+  // Strip Inspector tabs from existing panels, cascading panel removal if a
+  // panel ends up with zero tabs left.
+  let next: LayoutNode | null = root;
+  for (const entry of inspectorPanels) {
+    if (!next) break;
+    if (entry.hasOtherTabs) {
+      next = updatePanel(next, entry.panelId, (p) => {
+        const remaining = p.tabs.filter((t) => t.type !== 'inspector');
+        const stillActive = remaining.some((t) => t.id === p.activeTabId);
+        return {
+          ...p,
+          tabs: remaining,
+          activeTabId: stillActive ? p.activeTabId : (remaining[0]?.id ?? null),
+        };
+      });
+    } else {
+      // Panel was Inspector-only; drop the whole panel from the tree. If
+      // that empties the tree entirely (extremely unlikely — would require
+      // Inspector being the only panel left), fall back to a fresh default.
+      next = removeNode(next, entry.panelId) ?? cloneLayout(DEFAULT_LAYOUT);
+    }
+  }
+
+  if (!next) next = cloneLayout(DEFAULT_LAYOUT);
+
+  // Avoid duplicate ids: if the existing root still happens to be id='root',
+  // rename it to 's-workspace' before wrapping. Inner ids (graph/explorer/
+  // preview/code panels and their splits) are unaffected.
+  const inner: LayoutNode = next.id === 'root' ? { ...next, id: 's-workspace' } : next;
+  const inspectorPanel: PanelNode = {
+    kind: 'panel',
+    id: 'p-inspector',
+    tabs: [{ id: 'v-inspector', type: 'inspector', title: 'Inspector' }],
+    activeTabId: 'v-inspector',
+    pinned: false,
+  };
+  return {
+    kind: 'split',
+    id: 'root',
+    direction: 'horizontal',
+    ratio: 0.80,
+    children: [inner, inspectorPanel],
+  };
+}
+
+function ensureInspectorOnRightInFloating(floating: FloatingPanel[]): FloatingPanel[] {
+  // Floating panels stay as the user left them — Inspector relocation only
+  // touches the docked tree where the column layout matters.
+  return floating;
 }
 
 function removeLegacyLibraryColumn(root: LayoutNode): LayoutNode {
@@ -212,7 +333,7 @@ export interface WorkspaceStore {
 export const useWorkspace = create<WorkspaceStore>()(
   persist(
     (set, get) => ({
-      root: removeLegacyLibraryColumn(ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT))),
+      root: ensureInspectorOnRight(removeLegacyLibraryColumn(ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT)))),
       floating: [],
       maximizedPanelId: null,
 
@@ -382,7 +503,11 @@ export const useWorkspace = create<WorkspaceStore>()(
         return tabId;
       },
 
-      resetLayout: () => set({ root: removeLegacyLibraryColumn(ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT))), floating: [], maximizedPanelId: null }),
+      resetLayout: () => set({
+        root: ensureInspectorOnRight(removeLegacyLibraryColumn(ensurePreviewTabsInLayout(cloneLayout(DEFAULT_LAYOUT)))),
+        floating: [],
+        maximizedPanelId: null,
+      }),
 
       savePreset: (name) => {
         const s = get();
@@ -396,8 +521,8 @@ export const useWorkspace = create<WorkspaceStore>()(
         const preset = presets[name];
         if (!preset?.root) return false;
         set({
-          root: removeLegacyLibraryColumn(ensurePreviewTabsInLayout(preset.root)),
-          floating: ensurePreviewTabsInFloating(preset.floating || []),
+          root: ensureInspectorOnRight(removeLegacyLibraryColumn(ensurePreviewTabsInLayout(preset.root))),
+          floating: ensureInspectorOnRightInFloating(ensurePreviewTabsInFloating(preset.floating || [])),
           maximizedPanelId: preset.maximizedPanelId || null
         });
         return true;
@@ -418,9 +543,9 @@ export const useWorkspace = create<WorkspaceStore>()(
       merge: (persistedState, currentState) => {
         const persisted = (persistedState || {}) as Partial<WorkspaceStore>;
         const next = { ...currentState };
-        if (isLayoutNode((persisted as any).root)) next.root = removeLegacyLibraryColumn(ensurePreviewTabsInLayout((persisted as any).root));
+        if (isLayoutNode((persisted as any).root)) next.root = ensureInspectorOnRight(removeLegacyLibraryColumn(ensurePreviewTabsInLayout((persisted as any).root)));
         if (Array.isArray((persisted as any).floating)) {
-          next.floating = ensurePreviewTabsInFloating((persisted as any).floating.filter(isFloatingPanel));
+          next.floating = ensureInspectorOnRightInFloating(ensurePreviewTabsInFloating((persisted as any).floating.filter(isFloatingPanel)));
         }
         const maybeMax = (persisted as any).maximizedPanelId;
         if (maybeMax === null || typeof maybeMax === 'string') {

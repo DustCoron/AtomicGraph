@@ -7,12 +7,30 @@ export interface PipelineCompileResult {
   ok: boolean;
   error?: string;
   compileMs?: number;
+  /**
+   * True when the failure was caused by the GPUDevice being destroyed mid-flight
+   * (HMR teardown, tab switch, GC of a stale renderer instance). The shader code
+   * itself is fine — the consumer should retry immediately on the fresh renderer
+   * instead of surfacing a "Shader compilation error" to the user.
+   */
+  transient?: boolean;
   diagnostics?: Array<{
     type: string;
     lineNum: number;
     linePos: number;
     message: string;
   }>;
+}
+
+/**
+ * Heuristic for "the device just got dropped, my Promise outlived it" errors.
+ * Chromium currently reports this as `"A valid external Instance reference no longer exists."`
+ * or `"Instance dropped error in getCompilationInfo"`. We match defensively so
+ * future wording from any browser still gets classified correctly.
+ */
+function isTransientDeviceError(err: unknown): boolean {
+  const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err ?? '');
+  return /external\s+Instance\s+reference|Instance\s+dropped|device\s+(was\s+)?destroyed|device\s+is\s+lost/i.test(msg);
 }
 
 export interface RenderFrameResult {
@@ -101,6 +119,20 @@ export class GPUQuadRenderer {
           message: msg.message
         }));
       } catch (diagnosticErr) {
+        if (isTransientDeviceError(diagnosticErr)) {
+          // The device was dropped between createShaderModule() and the await above —
+          // typically HMR or a stale renderer instance after Strict-Mode-style remount.
+          // Bail out and tell the caller to retry on the new device; do not record this
+          // as a compile error since there's nothing wrong with the shader.
+          this.pipeline = null;
+          this.lastShaderHash = '';
+          return {
+            ok: false,
+            transient: true,
+            error: diagnosticErr instanceof Error ? diagnosticErr.message : String(diagnosticErr),
+            compileMs: performance.now() - t0,
+          };
+        }
         appendAppLog({
           level: 'warn',
           source: 'viewport',
@@ -136,9 +168,20 @@ export class GPUQuadRenderer {
       this.lastShaderHash = hash;
       return { ok: true, diagnostics, compileMs: performance.now() - t0 };
     } catch (e) {
-      console.error('WebGPU pipeline error:', e);
       this.pipeline = null;
       this.lastShaderHash = '';
+      if (isTransientDeviceError(e)) {
+        // Dropped device during createPipelineLayout / createRenderPipelineAsync.
+        // Same story as above — surface as transient so the consumer retries
+        // instead of pinning a phantom "Shader compilation error" in the UI.
+        return {
+          ok: false,
+          transient: true,
+          error: e instanceof Error ? e.message : String(e),
+          compileMs: performance.now() - t0,
+        };
+      }
+      console.error('WebGPU pipeline error:', e);
       return {
         ok: false,
         error: e instanceof Error ? e.message : String(e),

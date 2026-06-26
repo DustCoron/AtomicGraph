@@ -116,6 +116,11 @@ const TOOLBAR_BTN: React.CSSProperties = {
   fontSize: 11,
   fontWeight: 700,
   cursor: 'pointer',
+  // Without this the button label can break inside the button (e.g.
+  // "Load HDR..." displaying as "Load" / "HDR..." on narrow panels),
+  // which made the whole toolbar look glitched.
+  whiteSpace: 'nowrap',
+  flexShrink: 0,
 };
 
 const TOOLBAR_TOGGLE_ON: React.CSSProperties = {
@@ -1019,13 +1024,25 @@ export function Viewport3D({
       previousViewportArea = area;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       renderer.setPixelRatio(dpr * qualityRef.current.scale);
-      renderer.setSize(w, h, false);
+      // Third arg `false` was previously suppressing the canvas CSS size
+      // update — that left the <canvas> at its intrinsic attribute size
+      // and produced visible misfits (extra gutter around the rendered
+      // sphere, broken aspect during panel resizes). Now we let Three
+      // update the CSS size, and pin display/100% on the canvas below so
+      // it stretches with the host on every layout change.
+      renderer.setSize(w, h, true);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       sceneDirtyRef.current = true;
       };
       resize();
       host.appendChild(renderer.domElement);
+      // Defensive CSS in case Three's internal setSize/CSS path gets
+      // bypassed (DPI changes, certain Three.js versions): keep the
+      // canvas glued to the host's box.
+      renderer.domElement.style.display = 'block';
+      renderer.domElement.style.width = '100%';
+      renderer.domElement.style.height = '100%';
 
       const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -1033,6 +1050,14 @@ export function Viewport3D({
     controls.minDistance = 0.5;
     controls.maxDistance = 6;
     controls.maxPolarAngle = Math.PI * 0.49;
+    // Pan disabled so the orbit pivot is locked to the mesh's origin.
+    // With pan enabled (the default), any right-click drag or two-finger
+    // touch translates `controls.target` away from (0,0,0) — after which
+    // subsequent rotation orbits around the new, drifted pivot instead of
+    // the sphere. Substance Designer and other material-preview viewports
+    // behave the same way: rotate-only, no pan; users can use "Reset
+    // Cam" or change view preset to snap back to a known pose.
+    controls.enablePan = false;
     controls.autoRotate = autoRotateSpeed > 0;
     controls.autoRotateSpeed = autoRotateSpeed;
 
@@ -1756,9 +1781,14 @@ export function Viewport3D({
         }}
       />
 
-      <div style={{ borderBottom: '1px solid #33373d', padding: '6px 8px', display: 'flex', gap: 6, alignItems: 'center', background: '#232528', flexShrink: 0 }}>
-        <span style={{ color: '#f3f4f6', fontWeight: 700, fontSize: 11, marginRight: 2 }}>3D Preview</span>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#b9bec6', fontSize: 10 }}>
+      {/*
+        Toolbar with flex-wrap so narrow panels reflow buttons onto a
+        second row instead of squishing them. The "3D Preview" label
+        used to live here as a heading but it duplicated the panel-tab
+        title and ate horizontal space — removed.
+      */}
+      <div style={{ borderBottom: '1px solid #33373d', padding: '6px 8px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', background: '#232528', flexShrink: 0 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#b9bec6', fontSize: 10, whiteSpace: 'nowrap' }}>
           Mesh
           <select value={meshPreset} onChange={(e) => { const nextMesh = e.target.value as MeshPreset; const nextPose = defaultPreview3DCameraPose(nextMesh); updateSceneState((prev) => ({ ...prev, meshPreset: nextMesh, cameraPose: nextPose })); }} className="nt-select">
             <option value="plane">Plane</option>
@@ -1767,7 +1797,7 @@ export function Viewport3D({
             <option value="cylinder">Cylinder</option>
           </select>
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#b9bec6', fontSize: 10 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#b9bec6', fontSize: 10, whiteSpace: 'nowrap' }}>
           Mode
           <select value={viewMode} onChange={(e) => updateSceneState((prev) => ({ ...prev, viewMode: e.target.value as ViewMode }))} className="nt-select">
             <option value="lit">Lit</option>
@@ -1779,7 +1809,7 @@ export function Viewport3D({
             <option value="height">Height</option>
           </select>
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#b9bec6', fontSize: 10 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#b9bec6', fontSize: 10, whiteSpace: 'nowrap' }}>
           Env
           <select value={envPreset} onChange={(e) => updateSceneState((prev) => ({ ...prev, environmentPreset: e.target.value as EnvPreset }))} className="nt-select">
             <option value="studio">Studio</option>

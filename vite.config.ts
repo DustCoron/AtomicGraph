@@ -2,6 +2,8 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
+// @ts-expect-error - plain ESM plugin without type declarations
+import { agDevbridge } from './scripts/vite-plugin-ag-devbridge.mjs';
 
 function manualChunks(id: string): string | undefined {
   if (!id.includes('node_modules')) return undefined;
@@ -17,7 +19,7 @@ function manualChunks(id: string): string | undefined {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), agDevbridge()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
